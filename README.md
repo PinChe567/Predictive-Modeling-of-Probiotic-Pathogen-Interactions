@@ -35,6 +35,3 @@ Dose-response and resistance evolution assays using hBD-3 (AMP).
 * **`AMP to L. lactis CFU.xlsx`**: Probiotic tolerance test under varying AMP concentrations (CFU).
 * **`AMP to E. coli.xlsx`**: *E. coli* survival rates and killing efficiency.
 * **`AMP to E. coli second dose.xlsx`**: Adaptive resistance test (second-dose challenge).
-
-### Other
-* **`antibiotic selection.xlsx`**: Preliminary antibiotic marker selection data.
