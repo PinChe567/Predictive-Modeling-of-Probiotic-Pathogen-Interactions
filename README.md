@@ -1,18 +1,34 @@
 # Dataset: Predictive Modeling of Probiotic-Pathogen Interactions Under Threshold-Triggered Antimicrobial Peptide Control
 
-This directory contains the source code, raw experimental data and genetic sequences used in our study, **"Predictive Modeling of Probiotic-Pathogen Interactions Under Threshold-Triggered Antimicrobial Peptide Control"**.
+This repository contains the source code, raw experimental data, generated simulation datasets, and analysis outputs used in our study, **"Predictive Modeling of Probiotic-Pathogen Interactions Under Threshold-Triggered Antimicrobial Peptide Control"**.
+
+The project combines experimental microbial characterization, a synthetic multi-pathogen ODE simulation engine, threshold inverse-design modeling, ODE-back validation, and Umax optimization for threshold-triggered antimicrobial peptide (AMP) control.
+
+---
 
 ## 💻 Code
 
-Author: Ciou, Z.-C.
+Author: Huang, P.-C. & Ciou, Z.-C.
 
-Two core scripts drive the simulation and optimization framework:
+The computational workflow is organized into the following Python scripts:
 
-* **`drug_delivery_optimizer.py`**: A Stacking Ensemble ML model (DCN, MLP, XGBoost, LightGBM) used to predict optimal drug delivery parameters.
+| Script | Purpose |
+|---|---|
+| `microbio_dataset.py` | Generates the synthetic ODE simulation library and constructs the relabeled supervised dataset for Tthr prediction. |
+| `multi_pathogen_simulator.py` | Runs the multi-pathogen threshold-triggered ODE simulator and representative ODE trajectories. |
+| `simulate_case_metrics_fast.py` | Provides the fast metrics-only ODE backend used for ODE-back validation and Umax optimization. |
+| `heatmap.py` | Generates correlation heatmaps for biological features, desired outcomes, and controller targets. |
+| `tree_srl_benchmark.py` | Trains and evaluates the TAR threshold predictor and tree-based control models. |
+| `ode_back_validation.py` | Re-inserts predicted Tthr values into the ODE simulator to evaluate functional closed-loop outcomes. |
+| `closed_loop_eval.py` | Performs fixed-Umax validation, Umax weight screening, and Umax optimization studies. |
+| `derive_optimizer_references.py` | Derives training-only dose reference scales and fixed Umax policies. |
+| `figure_audit.py` | Regenerates manuscript figures from saved CSV outputs and exports PNG/SVG files. |
 
-* **`wound_environment_simulator.py`**: An ODE-based simulator modeling the interaction between E. coli (pathogen), L. lactis (probiotic), and AMP concentration over time.
+For the full execution order and command-line examples, please see:
 
-Dependencies: Python 3.x, numpy, pandas, scikit-learn, tensorflow, xgboost, lightgbm.
+```text
+pipeline.md
+```
 
 ---
 
@@ -22,14 +38,13 @@ Author: Huang, P.-C.
 
 The experimental data (locate in file: "experiment data") is provided in **Excel (.xlsx)** format. The files correspond to the results presented in **Figures 1–3** of the manuscript:
 
-### Figure 1: Bacterial Growth Kinetics
+### Figure 1: Bacterial Growth Kinetics & AMP Efficacy
 Growth dynamics of pathogenic *E. coli* and probiotic *L. lactis* for ODE model fitting.
 * **`E. coli growth curve OD.xlsx`**: Optical density (OD600) measurements for *E. coli*.
 * **`E. coli growth curve CFU.xlsx`**: Colony Forming Units (CFU) counts for *E. coli*.
 * **`L. lactis growth curve OD.xlsx`**: Standard growth curve (OD600) for *L. lactis*.
 * **`L. lactis growth curve CFU.xlsx`**: Standard growth curve (CFU) for *L. lactis*.
 
-### Figure 2: AMP Efficacy & Resistance
 Dose-response and resistance evolution assays using hBD-3 (AMP).
 * **`AMP to L. lactis OD.xlsx`**: Probiotic tolerance test under varying AMP concentrations (OD).
 * **`AMP to L. lactis CFU.xlsx`**: Probiotic tolerance test under varying AMP concentrations (CFU).
