@@ -1,0 +1,3061 @@
+"""Generate microbio simulation library and Tthr-only supervised datasets (raw + soft relabel).
+
+ODE integration uses multi_pathogen_simulator.py. Closed-loop evaluation uses closed_loop_eval.py.
+"""
+
+from __future__ import annotations
+
+import argparse
+import itertools
+import json
+import os
+import shutil
+import time
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple
+
+import numpy as np
+import pandas as pd
+
+try:
+    import torch
+
+    _TORCH_AVAILABLE = True
+except Exception:
+    torch = None  # type: ignore[assignment]
+    _TORCH_AVAILABLE = False
+
+try:
+    from scipy.stats import qmc
+except Exception:
+    qmc = None
+
+
+from multi_pathogen_simulator import (
+    ALPHA,
+    BETA,
+    BIO_COLS,
+    B0_S_REP,
+    DEFAULT_ODE_PROFILE_NAME,
+    ECOLI_OD_TO_CFU_R2,
+    GAMMA_S_REP,
+    K_PATHOGEN,
+    K_REP,
+    KPI_COLS,
+    LLACTIS_OD_TO_CFU_R2,
+    MU_REP,
+    N_STRAINS,
+    P0_S_REP,
+    PAPER_FIGURE_PROFILE,
+    RHO_REP,
+    row_from_case,
+    simulation_outcome_row,
+)
+
+ODE_PROFILE = DEFAULT_ODE_PROFILE_NAME
+ODE_PARAMETERIZATION = "E. coli / L. lactis growth-curve calibrated default ODE profile"
+
+
+def ode_profile_manifest_fields() -> Dict[str, object]:
+    return {
+        "ode_profile": ODE_PROFILE,
+        "parameterization": ODE_PARAMETERIZATION,
+    }
+
+
+def microbio_generation_provenance_fields() -> Dict[str, object]:
+    return {
+        **ode_profile_manifest_fields(),
+        "ecoli_growth_rate_anchor_h_inv": 0.241,
+        "llactis_growth_rate_h_inv": 0.2522,
+        "llactis_initial_density_CFU_per_mL": 1.676e6,
+        "llactis_K_P_CFU_per_mL": 3.35e8,
+        "gamma_P_preliminary_mL_ug_inv_h_inv": 0.0015,
+        "gamma_pathogen_preliminary_mL_ug_inv_h_inv": 0.0046,
+        "non_identifiable_parameters": ["alpha", "beta", "rho", "mu", "eta", "lambda_amp"],
+    }
+
+
+def build_ode_profile_parameters_df() -> pd.DataFrame:
+    profile = PAPER_FIGURE_PROFILE
+    rows: List[dict] = []
+
+    def add_vector_param(
+        parameter: str,
+        code_name: str,
+        values: np.ndarray,
+        unit: str,
+        source_category: str,
+        source_experiment: str,
+        notes: str,
+    ) -> None:
+        for idx, value in enumerate(np.asarray(values, dtype=float), start=1):
+            rows.append(
+                {
+                    "parameter": parameter,
+                    "code_name": code_name,
+                    "index": idx,
+                    "value": float(value),
+                    "unit": unit,
+                    "source_category": source_category,
+                    "source_experiment": source_experiment,
+                    "notes": notes,
+                }
+            )
+
+    add_vector_param(
+        "pathogen initial density",
+        "B0_rep",
+        profile.B0_rep,
+        "CFU/mL",
+        "model_default",
+        "multi-strain representative grid",
+        "LHS sampled at 0.6-1.4x representative values during dataset generation",
+    )
+    add_vector_param(
+        "pathogen growth rate",
+        "k_rep",
+        profile.k_rep,
+        "h^-1",
+        "experimental_fit",
+        "E. coli CFU logistic growth",
+        "Anchor mean k=0.241 h^-1 with strain-relative scaling",
+    )
+    add_vector_param(
+        "pathogen AMP killing rate",
+        "gamma_s_rep",
+        profile.gamma_s_rep,
+        "mL ug^-1 h^-1",
+        "preliminary_estimate",
+        "AMP pathogen suppression (not monoculture fitted)",
+        "Preliminary estimate gamma_s=0.0046",
+    )
+    add_vector_param(
+        "resistant-fraction split",
+        "rho_rep",
+        profile.rho_rep,
+        "dimensionless",
+        "model_assumption",
+        "not directly identifiable from monoculture curves",
+        "Sets gamma_T = gamma_S * (1-rho)",
+    )
+    add_vector_param(
+        "resistance transfer rate",
+        "mu_rep",
+        profile.mu_rep,
+        "h^-1",
+        "model_assumption",
+        "not directly identifiable from monoculture curves",
+        "Sensitivity parameter",
+    )
+    add_vector_param(
+        "pathogen carrying capacity",
+        "K_pathogen",
+        profile.K_pathogen,
+        "CFU/mL",
+        "experimental_fit",
+        "E. coli CFU stationary phase",
+        "Stationary phase ~1.5e9 CFU/mL with strain scaling",
+    )
+
+    scalar_params = [
+        ("probiotic initial density", "P0", profile.P0, "CFU/mL", "experimental_fit", "L. lactis CFU growth", "Logistic Y0=1.676e6 CFU/mL"),
+        ("probiotic growth rate", "k_P", profile.k_P, "h^-1", "experimental_fit", "L. lactis CFU growth", "Logistic k=0.2522 h^-1"),
+        ("probiotic carrying capacity", "K_P", profile.K_P, "CFU/mL", "experimental_fit", "L. lactis OD-to-CFU YM average", "OD-derived K_P ~3.35e8 CFU/mL"),
+        ("probiotic AMP killing rate", "gamma_P", profile.gamma_P, "mL ug^-1 h^-1", "preliminary_estimate", "AMP probiotic suppression", "Preliminary estimate gamma_P=0.0015"),
+        ("probiotic resistant split", "rho_P", profile.rho_P, "dimensionless", "model_assumption", "two-compartment probiotic model", "Not fitted from monoculture curves"),
+        ("probiotic resistance transfer", "mu_P", profile.mu_P, "h^-1", "model_assumption", "two-compartment probiotic model", "Not fitted from monoculture curves"),
+        ("probiotic tolerant growth factor", "eta_P", profile.eta_P, "dimensionless", "model_assumption", "two-compartment probiotic model", "Not fitted from monoculture curves"),
+        ("AMP decay rate", "lambda_amp", profile.lambda_amp, "h^-1", "model_assumption", "AMP pharmacokinetics", "Not fitted from growth curves"),
+        ("detection interval", "dt_detect", profile.dt_detect, "h", "model_assumption", "controller sampling", "10-min detection interval"),
+        ("simulation horizon", "t_end", profile.t_end, "h", "model_assumption", "simulation horizon", "96 h forward simulation"),
+        ("integration step", "dt", profile.dt, "h", "model_assumption", "forward Euler step", "Fixed time step for ODE integration"),
+    ]
+    for parameter, code_name, value, unit, source_category, source_experiment, notes in scalar_params:
+        rows.append(
+            {
+                "parameter": parameter,
+                "code_name": code_name,
+                "index": 0,
+                "value": float(value),
+                "unit": unit,
+                "source_category": source_category,
+                "source_experiment": source_experiment,
+                "notes": notes,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def build_ode_parameter_sources_df() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "parameter_group": "OD_to_CFU",
+                "code_parameter": "E_coli_OD600",
+                "organism": "E. coli",
+                "experiment_type": "OD calibration",
+                "value_used": "CFU = 3.14e8 * OD600 - 4.81e7",
+                "unit": "CFU/mL per OD600",
+                "fit_R2": ECOLI_OD_TO_CFU_R2,
+                "used_as": "unit conversion / provenance for CFU-scale pathogen parameters",
+                "limitation": "Linear OD-CFU mapping; not used directly as ODE state conversion during simulation",
+            },
+            {
+                "parameter_group": "OD_to_CFU",
+                "code_parameter": "L_lactis_OD600",
+                "organism": "L. lactis",
+                "experiment_type": "OD calibration",
+                "value_used": "CFU = 2.89e8 * OD600 + 2.56e7",
+                "unit": "CFU/mL per OD600",
+                "fit_R2": LLACTIS_OD_TO_CFU_R2,
+                "used_as": "unit conversion for K_P derivation",
+                "limitation": "Linear OD-CFU mapping",
+            },
+            {
+                "parameter_group": "growth_rate",
+                "code_parameter": "k_rep",
+                "organism": "E. coli",
+                "experiment_type": "CFU logistic growth",
+                "value_used": "k=0.2443 and 0.2378 h^-1; mean=0.241 h^-1",
+                "unit": "h^-1",
+                "fit_R2": np.nan,
+                "used_as": "default pathogen k_rep anchor",
+                "limitation": "Monoculture fit; multi-strain scaling applied in ODE defaults",
+            },
+            {
+                "parameter_group": "growth_rate",
+                "code_parameter": "k_P",
+                "organism": "L. lactis",
+                "experiment_type": "CFU logistic growth",
+                "value_used": "Y0=1.676e6 CFU/mL, k=0.2522 h^-1",
+                "unit": "CFU/mL; h^-1",
+                "fit_R2": 0.9037,
+                "used_as": "default probiotic growth parameters (P0, k_P)",
+                "limitation": "Monoculture fit in probiotic medium",
+            },
+            {
+                "parameter_group": "carrying_capacity",
+                "code_parameter": "K_P",
+                "organism": "L. lactis",
+                "experiment_type": "OD-derived stationary phase",
+                "value_used": "3.35e8",
+                "unit": "CFU/mL",
+                "fit_R2": np.nan,
+                "used_as": "default probiotic carrying capacity",
+                "limitation": "Derived from OD-to-CFU converted YM average",
+            },
+            {
+                "parameter_group": "AMP_killing",
+                "code_parameter": "gamma_P",
+                "organism": "L. lactis",
+                "experiment_type": "preliminary AMP estimate",
+                "value_used": "0.0015",
+                "unit": "mL ug^-1 h^-1",
+                "fit_R2": np.nan,
+                "used_as": "default probiotic AMP suppression rate",
+                "limitation": "Preliminary estimate; not fully identifiable from monoculture growth alone",
+            },
+            {
+                "parameter_group": "AMP_killing",
+                "code_parameter": "gamma_s_rep",
+                "organism": "E. coli",
+                "experiment_type": "preliminary AMP estimate",
+                "value_used": "0.0046",
+                "unit": "mL ug^-1 h^-1",
+                "fit_R2": np.nan,
+                "used_as": "default pathogen AMP suppression rate",
+                "limitation": "Preliminary estimate; not fully identifiable from monoculture growth alone",
+            },
+            {
+                "parameter_group": "model_assumption",
+                "code_parameter": "alpha,beta,rho,mu,eta,lambda_amp",
+                "organism": "mixed community model",
+                "experiment_type": "structural assumption",
+                "value_used": "fixed defaults in ODE simulator",
+                "unit": "mixed",
+                "fit_R2": np.nan,
+                "used_as": "competition, resistance, AMP decay structure",
+                "limitation": "Not directly identifiable from current monoculture growth curves",
+            },
+        ]
+    )
+
+TARGET_COLS = ["u_max"] + [f"Tthr_{i}" for i in range(1, 6)]
+TARGET_COLS_MAIN = [f"Tthr_{i}" for i in range(1, 6)]
+C_REF = 25.0
+ID_COLS = ["bio_id", "controller_id"]
+DIAG_COLS = [
+    "dose_count",
+    "total_dosage_ug_per_mL",
+    "final_total_pathogen_CFU_per_mL",
+    "final_probiotic_CFU_per_mL",
+    "mean_LR_final",
+    "min_LR_final",
+]
+LR_FINAL_COLS = [f"LR_final_{i}" for i in range(1, 6)]
+LR_TERMINAL_MEDIAN_COLS = [f"LR_terminal_median_{i}" for i in range(1, 6)]
+LR_TERMINAL_MEAN_COLS = [f"LR_terminal_mean_{i}" for i in range(1, 6)]
+PATHOGEN_AUC_COLS = [f"pathogen_AUC_{i}" for i in range(1, 6)]
+LR_AUC_COLS = [f"LR_auc_{i}" for i in range(1, 6)]
+EXTENDED_OUTCOME_COLS = (
+    DIAG_COLS
+    + LR_FINAL_COLS
+    + LR_TERMINAL_MEDIAN_COLS
+    + LR_TERMINAL_MEAN_COLS
+    + PATHOGEN_AUC_COLS
+    + LR_AUC_COLS
+)
+MICROBIO_COLS = ID_COLS + BIO_COLS + TARGET_COLS + KPI_COLS + EXTENDED_OUTCOME_COLS
+SIM_ROW_COLS = BIO_COLS + TARGET_COLS + KPI_COLS + EXTENDED_OUTCOME_COLS
+X_FEATURE_COLS = BIO_COLS + KPI_COLS
+SAMPLE_METADATA_COLS = [
+    "row_id",
+    "bio_id",
+    "desired_profile_id",
+    "selected_original_row_index",
+    "selected_controller_id",
+    "desired_P_AUC",
+    "desired_LR1",
+    "desired_LR2",
+    "desired_LR3",
+    "desired_LR4",
+    "desired_LR5",
+    "selected_simulated_P_AUC",
+    "selected_simulated_LR1",
+    "selected_simulated_LR2",
+    "selected_simulated_LR3",
+    "selected_simulated_LR4",
+    "selected_simulated_LR5",
+    "lr_error",
+    "pauc_error",
+    "match_error_no_dose",
+    "dose_norm",
+    "threshold_norm",
+    "selection_score",
+]
+SOFT_TTHR_SAMPLE_METADATA_COLS = SAMPLE_METADATA_COLS + [
+    "constraint_violation",
+    "final_score",
+    "target_uncertainty",
+    "target_uncertainty_norm",
+    "soft_u_max",
+    "softmax_tau_used",
+    "top_k_candidates",
+    "n_group_candidates",
+    "relabel_mode",
+    "effective_k",
+    "top1_score",
+    "top2_score",
+    "score_margin",
+    "selected_k_score_range",
+    "softmax_entropy",
+    "weighted_Tthr_std_1",
+    "weighted_Tthr_std_2",
+    "weighted_Tthr_std_3",
+    "weighted_Tthr_std_4",
+    "weighted_Tthr_std_5",
+    "weighted_Tthr_mean_std",
+    "weighted_u_max_std",
+    "nearest_candidate_distance",
+    "soft_label_to_top1_distance",
+    "soft_label_to_nearest_candidate_distance",
+]
+RELABEL_UNCERTAINTY_SUMMARY_COLS = [
+    "row_id",
+    "bio_id",
+    "desired_profile_id",
+    "relabel_mode",
+    "effective_k",
+    "top1_score",
+    "top2_score",
+    "score_margin",
+    "selected_k_score_range",
+    "softmax_entropy",
+    "target_uncertainty",
+    "weighted_Tthr_std_1",
+    "weighted_Tthr_std_2",
+    "weighted_Tthr_std_3",
+    "weighted_Tthr_std_4",
+    "weighted_Tthr_std_5",
+    "weighted_Tthr_mean_std",
+    "weighted_u_max_std",
+    "nearest_candidate_distance",
+    "soft_label_to_top1_distance",
+    "soft_label_to_nearest_candidate_distance",
+]
+LEAKAGE_SAFE_RELABEL_NOTES = [
+    "Relabel parameters must be fixed before final model evaluation.",
+    "Do not choose k based on held-out benchmark / closed-loop performance.",
+    "Final manuscript uses one pre-specified relabel setting (fixed top_k=8).",
+]
+BUNDLE_LEAKAGE_SAFE_NOTES = LEAKAGE_SAFE_RELABEL_NOTES
+SAMPLE_WEIGHTS_COLS = ["row_id", "sample_weight", "target_uncertainty", "target_uncertainty_norm"]
+LR_DEFINITION = (
+    "LR1-LR5 are terminal-window median log-reduction over the final 12 h simulation window (84-96 h)."
+)
+LR_METRIC_COLUMN_MAP = {
+    "terminal_median": LR_TERMINAL_MEDIAN_COLS,
+    "terminal_mean": LR_TERMINAL_MEAN_COLS,
+    "final": LR_FINAL_COLS,
+    "auc": LR_AUC_COLS,
+}
+
+def sobol_threshold_vectors(n_threshold_vectors: int, seed: int = 42) -> np.ndarray:
+    """Generate Sobol threshold vectors; pad to next power of 2 then slice."""
+    m = int(np.ceil(np.log2(max(n_threshold_vectors, 1))))
+    n_sobol = 2 ** m
+    thr_levels = 0.4 * 2.0e7 * 1.26 ** np.arange(10)
+    if qmc is not None:
+        sob = qmc.Sobol(d=5, scramble=True, seed=seed)
+        T_unit = sob.random_base2(m=m)[:n_sobol]
+        T_vecs = thr_levels[(T_unit * 10).astype(int)]
+    else:
+        rng = np.random.default_rng(seed)
+        T_vecs = thr_levels[rng.integers(0, 10, size=(n_sobol, 5))]
+    return T_vecs[:n_threshold_vectors]
+
+
+def generate_rows(
+    n_bio: int = 500,
+    n_threshold_vectors: int = 16,
+    u_min: float = 10.0,
+    u_max_grid: float = 30.0,
+    u_step: float = 2.0,
+) -> Tuple[pd.DataFrame, Dict[str, object]]:
+    if qmc is not None:
+        sampler = qmc.LatinHypercube(d=15, seed=0)
+        lhs_mat = sampler.random(n=n_bio)
+    else:
+        rng = np.random.default_rng(0)
+        lhs_mat = rng.random((n_bio, 15))
+
+    def scale(v, lo, hi):
+        return lo + v * (hi - lo)
+
+    B0_lo, B0_hi = 0.6 * B0_S_REP, 1.4 * B0_S_REP
+    k_lo, k_hi = 0.8 * K_REP, 1.2 * K_REP
+    g_lo, g_hi = 0.8 * GAMMA_S_REP, 1.2 * GAMMA_S_REP
+
+    bio_vecs = []
+    for row in lhs_mat:
+        ptr = 0
+        B0 = scale(row[ptr:ptr + 5], B0_lo, B0_hi); ptr += 5
+        k_v = scale(row[ptr:ptr + 5], k_lo, k_hi); ptr += 5
+        g_v = scale(row[ptr:ptr + 5], g_lo, g_hi); ptr += 5
+        bio_vecs.append((B0, k_v, g_v))
+
+    mu_fac = [0.8, 1.2]
+    rho_add = [0.0, 0.05]
+    u_grid = np.arange(u_min, u_max_grid + 1e-9, u_step, dtype=float)
+    T_vecs = sobol_threshold_vectors(n_threshold_vectors)
+
+    rows = []
+    n_biological_groups = n_bio * len(mu_fac) * len(rho_add)
+    controller_candidates_per_group = len(u_grid) * len(T_vecs)
+    total = n_biological_groups * controller_candidates_per_group
+    done = 0
+    bio_id = 0
+    for B0, k_v, g_v in bio_vecs:
+        for mfac, radd in itertools.product(mu_fac, rho_add):
+            mu_v = mfac * MU_REP
+            rho_v = RHO_REP + radd
+            controller_id = 0
+            for u in u_grid:
+                for T in T_vecs:
+                    sim_row = row_from_case(B0, k_v, g_v, rho_v, mu_v, float(u), T)
+                    rows.append([bio_id, controller_id, *sim_row.tolist()])
+                    controller_id += 1
+                    done += 1
+                    if done % 10000 == 0:
+                        print(f"generated {done:,}/{total:,} rows")
+            bio_id += 1
+
+    df = pd.DataFrame(rows, columns=MICROBIO_COLS)
+    generation_summary = {
+        "n_bio": n_bio,
+        "n_biological_groups": n_biological_groups,
+        "n_threshold_vectors": n_threshold_vectors,
+        "u_grid": u_grid.tolist(),
+        "raw_rows": int(len(df)),
+        "controller_candidates_per_group": controller_candidates_per_group,
+        "lr_definition": LR_DEFINITION,
+    }
+    return df, generation_summary
+
+
+def write_dataset(
+    outdir: str,
+    n_bio: int,
+    n_threshold_vectors: int = 16,
+    u_min: float = 10.0,
+    u_max_grid: float = 30.0,
+    u_step: float = 2.0,
+) -> None:
+    os.makedirs(outdir, exist_ok=True)
+    df, generation_summary = generate_rows(
+        n_bio=n_bio,
+        n_threshold_vectors=n_threshold_vectors,
+        u_min=u_min,
+        u_max_grid=u_max_grid,
+        u_step=u_step,
+    )
+    microbio_path = os.path.join(outdir, "MICROBIO.csv")
+    summary_path = os.path.join(outdir, "microbio_generation_summary.json")
+    params_path = os.path.join(outdir, "ode_profile_parameters.csv")
+    sources_path = os.path.join(outdir, "ode_parameter_sources.csv")
+    generation_summary.update(microbio_generation_provenance_fields())
+    df.to_csv(microbio_path, index=False)
+    build_ode_profile_parameters_df().to_csv(params_path, index=False)
+    build_ode_parameter_sources_df().to_csv(sources_path, index=False)
+    with open(summary_path, "w", encoding="utf-8") as fh:
+        json.dump(generation_summary, fh, indent=2)
+    print("Saved MICROBIO.csv")
+    print(f"Saved {microbio_path}")
+    print(f"Saved {summary_path}")
+    print(f"Saved {params_path}")
+    print(f"Saved {sources_path}")
+    print(f"Dataset shape: {df.shape}")
+    print(LR_DEFINITION)
+
+
+def parse_float_list(value: str) -> List[float]:
+    items = [float(x.strip()) for x in value.split(",") if x.strip()]
+    if not items:
+        raise ValueError("Expected at least one comma-separated float value.")
+    return items
+
+
+def resolve_lr_columns(df: pd.DataFrame, lr_metric: str) -> Tuple[List[str], str]:
+    if lr_metric not in LR_METRIC_COLUMN_MAP:
+        raise ValueError(f"lr_metric must be one of {sorted(LR_METRIC_COLUMN_MAP)}")
+
+    preferred = LR_METRIC_COLUMN_MAP[lr_metric]
+    if all(col in df.columns for col in preferred):
+        return preferred, lr_metric
+
+    if lr_metric == "final" and all(f"LR{i}" in df.columns for i in range(1, 6)):
+        fallback = [f"LR{i}" for i in range(1, 6)]
+        print(
+            "WARNING: LR_final_* columns not found in MICROBIO.csv; "
+            "falling back to LR1-LR5 for relabeling LR matching."
+        )
+        return fallback, "final_lr1_lr5_fallback"
+
+    if lr_metric == "terminal_median" and all(f"LR{i}" in df.columns for i in range(1, 6)):
+        fallback = [f"LR{i}" for i in range(1, 6)]
+        print(
+            "WARNING: LR_terminal_median_* columns not found in MICROBIO.csv; "
+            "falling back to LR1-LR5 for relabeling LR matching."
+        )
+        return fallback, "terminal_median_lr1_lr5_fallback"
+
+    missing = [col for col in preferred if col not in df.columns]
+    raise ValueError(f"Required LR columns for lr_metric='{lr_metric}' are missing: {missing}")
+
+
+def normalized_series(values: pd.Series) -> pd.Series:
+    vmin = float(values.min())
+    vmax = float(values.max())
+    if abs(vmax - vmin) <= 1e-30:
+        return pd.Series(np.zeros(len(values), dtype=float), index=values.index)
+    return (values - vmin) / (vmax - vmin)
+
+
+def distribution_summary(series: pd.Series) -> Dict[str, float]:
+    return {
+        "min": float(series.min()),
+        "q25": float(series.quantile(0.25)),
+        "median": float(series.median()),
+        "q75": float(series.quantile(0.75)),
+        "max": float(series.max()),
+        "mean": float(series.mean()),
+    }
+
+
+def physics_feature_column_names() -> List[str]:
+    cols: List[str] = []
+    for i in range(1, N_STRAINS + 1):
+        cols.extend(
+            [
+                f"B0_{i}_over_K_{i}",
+                f"gamma_{i}_over_k_{i}",
+                f"mu_{i}_over_k_{i}",
+                f"gammaR_{i}",
+                f"gammaR_{i}_over_k_{i}",
+                f"initial_competition_{i}",
+                f"growth_minus_kill_ref_{i}",
+            ]
+        )
+    return cols
+
+
+PHYSICS_FEATURE_COLS = physics_feature_column_names()
+
+
+def add_physics_features(X_df: pd.DataFrame, c_ref: float = C_REF) -> pd.DataFrame:
+    """Append deterministic ODE-derived physics features; retain all original columns."""
+    out = X_df.copy()
+    for i in range(1, N_STRAINS + 1):
+        idx = i - 1
+        b0 = out[f"B0_{i}"].astype(float)
+        k = out[f"k_{i}"].astype(float)
+        g = out[f"g_{i}"].astype(float)
+        rho = out[f"rho_{i}"].astype(float)
+        mu = out[f"mu_{i}"].astype(float)
+        k_path = float(K_PATHOGEN[idx])
+
+        out[f"B0_{i}_over_K_{i}"] = b0 / k_path
+        out[f"gamma_{i}_over_k_{i}"] = g / k
+        out[f"mu_{i}_over_k_{i}"] = mu / k
+        gamma_r = g * (1.0 - rho)
+        out[f"gammaR_{i}"] = gamma_r
+        out[f"gammaR_{i}_over_k_{i}"] = gamma_r / k
+
+        b0_matrix = np.column_stack([out[f"B0_{j}"].astype(float) for j in range(1, N_STRAINS + 1)])
+        initial_competition = (
+            b0_matrix @ ALPHA[idx, :].reshape(N_STRAINS, 1)
+        ).reshape(-1) + float(BETA[idx]) * float(P0_S_REP)
+        out[f"initial_competition_{i}"] = initial_competition
+        out[f"growth_minus_kill_ref_{i}"] = k - g * c_ref
+
+    return out
+
+
+def estimate_soft_tau(scores: np.ndarray, soft_tau: str | float) -> float:
+    """Estimate softmax temperature from top-K selection scores (IQR or MAD)."""
+    if str(soft_tau).lower() != "auto":
+        return max(float(soft_tau), 1e-12)
+    if len(scores) <= 1:
+        return 1.0
+    q25, q75 = np.quantile(scores, [0.25, 0.75])
+    iqr = float(q75 - q25)
+    med = float(np.median(scores))
+    mad = float(np.median(np.abs(scores - med)))
+    return max(iqr, mad, 1e-6)
+
+
+def compute_constraint_violation(
+    simulated_lr: np.ndarray,
+    desired_lr: np.ndarray,
+    simulated_pauc: float,
+    desired_pauc: float,
+    lr_final: Optional[np.ndarray] = None,
+) -> float:
+    """Penalty when terminal LR or PAUC fail to meet desired profile constraints."""
+    terminal_shortfall = np.maximum(0.0, desired_lr - simulated_lr)
+    terminal_penalty = float(np.mean(terminal_shortfall))
+    if lr_final is not None:
+        final_shortfall = np.maximum(0.0, desired_lr - lr_final)
+        terminal_penalty = max(terminal_penalty, float(np.mean(final_shortfall)))
+    pauc_penalty = max(0.0, desired_pauc - simulated_pauc)
+    return terminal_penalty + pauc_penalty
+
+
+def compute_soft_tthr_targets(
+    top_candidates: List[dict],
+    soft_tau: str | float,
+) -> Tuple[Dict[str, float], np.ndarray, float, Dict[str, float], float]:
+    """Softmax-weighted Tthr targets and diagnostics over top-K controller candidates."""
+    scores = np.array([c["final_score"] for c in top_candidates], dtype=float)
+    score_min = float(scores.min())
+    tau = estimate_soft_tau(scores, soft_tau)
+    logits = np.exp(-(scores - score_min) / tau)
+    probs = logits / logits.sum()
+
+    tthr_values = np.array(
+        [[float(c[f"Tthr_{i}"]) for i in range(1, 6)] for c in top_candidates],
+        dtype=float,
+    )
+    weighted_mean = np.sum(probs[:, None] * tthr_values, axis=0)
+    weighted_var = np.sum(probs[:, None] * (tthr_values - weighted_mean) ** 2, axis=0)
+    weighted_std = np.sqrt(np.maximum(weighted_var, 0.0))
+
+    y_row = {col: float(weighted_mean[i]) for i, col in enumerate(TARGET_COLS_MAIN)}
+    u_max_values = np.array([float(c["u_max"]) for c in top_candidates], dtype=float)
+    soft_u_max = float(np.sum(probs * u_max_values))
+
+    diagnostics = {
+        "top1_score": float(scores[0]),
+        "top1_probability": float(probs[0]),
+        "entropy": float(-np.sum(probs * np.log(probs + 1e-12))),
+        "mean_target_std": float(np.mean(weighted_std)),
+        "soft_tau_used": tau,
+        "soft_u_max": soft_u_max,
+        **{f"std_{col}": float(weighted_std[i]) for i, col in enumerate(TARGET_COLS_MAIN)},
+    }
+    return y_row, probs, tau, diagnostics, soft_u_max
+
+
+def resolve_relabel_device(device: str) -> str:
+    """Resolve relabel compute device: 'auto' prefers CUDA when available."""
+    choice = str(device).lower()
+    if choice not in {"auto", "gpu", "cpu"}:
+        raise ValueError("device must be one of: auto, gpu, cpu")
+    if choice == "cpu":
+        return "cpu"
+    if _TORCH_AVAILABLE and torch.cuda.is_available():
+        return "cuda"
+    if choice == "gpu":
+        print("WARNING: CUDA GPU not available; falling back to CPU vectorized relabel.")
+    return "cpu"
+
+
+@dataclass
+class RelabelConfig:
+    top_k: int = 8
+    soft_tau: str | float = "auto"
+    acceptable_threshold: Optional[float] = None
+    drop_infeasible_profiles: bool = False
+
+    def validate(self) -> None:
+        if self.top_k < 1:
+            raise ValueError("top_k must be >= 1.")
+        if self.drop_infeasible_profiles and self.acceptable_threshold is None:
+            raise ValueError("--acceptable_threshold is required when --drop_infeasible_profiles is set.")
+
+
+@dataclass
+class _GroupStack:
+    bio_ids: np.ndarray
+    row_idx: np.ndarray
+    controller_id: np.ndarray
+    sim_lr: np.ndarray
+    lr_final: np.ndarray
+    pauc: np.ndarray
+    dose_norm: np.ndarray
+    threshold_norm: np.ndarray
+    u_max: np.ndarray
+    tthr: np.ndarray
+    bio_values: np.ndarray
+    total_dosage: Optional[np.ndarray] = None
+
+
+def _stack_bio_groups(
+    grouped: pd.core.groupby.DataFrameGroupBy,
+    lr_cols: List[str],
+    lr_final_cols: List[str],
+) -> _GroupStack:
+    """Stack equal-sized bio_id groups into (G, C, ...) arrays."""
+    bio_ids: List[int] = []
+    row_idx_rows: List[np.ndarray] = []
+    controller_rows: List[np.ndarray] = []
+    sim_lr_rows: List[np.ndarray] = []
+    lr_final_rows: List[np.ndarray] = []
+    pauc_rows: List[np.ndarray] = []
+    dose_norm_rows: List[np.ndarray] = []
+    threshold_norm_rows: List[np.ndarray] = []
+    u_max_rows: List[np.ndarray] = []
+    tthr_rows: List[np.ndarray] = []
+    bio_value_rows: List[np.ndarray] = []
+    total_dosage_rows: List[np.ndarray] = []
+    expected_size: Optional[int] = None
+    for group_key, group in grouped:
+        group = group.copy()
+        if "total_dosage_ug_per_mL" in group.columns:
+            dose_source = group["total_dosage_ug_per_mL"].astype(float)
+        else:
+            dose_source = group["u_max"].astype(float)
+        dose_norm_all = normalized_series(dose_source)
+        threshold_mean = group[[f"Tthr_{i}" for i in range(1, 6)]].mean(axis=1)
+        threshold_norm_all = normalized_series(threshold_mean)
+
+        n_candidates = len(group)
+        if expected_size is None:
+            expected_size = n_candidates
+        elif n_candidates != expected_size:
+            raise ValueError(
+                "Vectorized relabel requires equal controller counts per bio_id; "
+                f"bio_id={group_key} has {n_candidates}, expected {expected_size}."
+            )
+
+        bio_ids.append(int(group_key))
+        row_idx_rows.append(np.array(group.index.to_numpy(dtype=np.int64), copy=True))
+        if "controller_id" in group.columns:
+            controller_rows.append(group["controller_id"].to_numpy(dtype=np.int64))
+        else:
+            controller_rows.append(np.full(n_candidates, -1, dtype=np.int64))
+        sim_lr_rows.append(group[lr_cols].to_numpy(dtype=np.float64))
+        lr_final_rows.append(group[lr_final_cols].to_numpy(dtype=np.float64))
+        pauc_rows.append(group["P_AUC"].to_numpy(dtype=np.float64))
+        dose_norm_rows.append(dose_norm_all.to_numpy(dtype=np.float64))
+        threshold_norm_rows.append(threshold_norm_all.to_numpy(dtype=np.float64))
+        u_max_rows.append(group["u_max"].to_numpy(dtype=np.float64))
+        tthr_rows.append(group[[f"Tthr_{i}" for i in range(1, 6)]].to_numpy(dtype=np.float64))
+        bio_value_rows.append(group.iloc[0][BIO_COLS].to_numpy(dtype=np.float64))
+        if "total_dosage_ug_per_mL" in group.columns:
+            total_dosage_rows.append(group["total_dosage_ug_per_mL"].to_numpy(dtype=np.float64))
+
+    if not bio_ids:
+        raise ValueError("No biological groups found for relabeling.")
+
+    total_dosage_stack = np.stack(total_dosage_rows, axis=0) if total_dosage_rows else None
+
+    return _GroupStack(
+        bio_ids=np.asarray(bio_ids, dtype=np.int64),
+        row_idx=np.stack(row_idx_rows, axis=0),
+        controller_id=np.stack(controller_rows, axis=0),
+        sim_lr=np.stack(sim_lr_rows, axis=0),
+        lr_final=np.stack(lr_final_rows, axis=0),
+        pauc=np.stack(pauc_rows, axis=0),
+        dose_norm=np.stack(dose_norm_rows, axis=0),
+        threshold_norm=np.stack(threshold_norm_rows, axis=0),
+        u_max=np.stack(u_max_rows, axis=0),
+        tthr=np.stack(tthr_rows, axis=0),
+        bio_values=np.stack(bio_value_rows, axis=0),
+        total_dosage=total_dosage_stack,
+    )
+
+
+def _estimate_soft_tau_batch(scores_topk: np.ndarray, soft_tau: str | float) -> np.ndarray:
+    """Batch softmax temperature from top-K scores; scores_topk shape (..., K)."""
+    if str(soft_tau).lower() != "auto":
+        return np.full(scores_topk.shape[:-1], max(float(soft_tau), 1e-12), dtype=np.float64)
+    if scores_topk.shape[-1] <= 1:
+        return np.ones(scores_topk.shape[:-1], dtype=np.float64)
+    q25, q75 = np.quantile(scores_topk, [0.25, 0.75], axis=-1)
+    iqr = q75 - q25
+    med = np.median(scores_topk, axis=-1)
+    mad = np.median(np.abs(scores_topk - med[..., None]), axis=-1)
+    return np.maximum(np.maximum(iqr, mad), 1e-6)
+
+
+def _vectorized_constraint_violation(
+    sim_lr: np.ndarray,
+    desired_lr: np.ndarray,
+    sim_pauc: np.ndarray,
+    desired_pauc: np.ndarray,
+    lr_final: np.ndarray,
+) -> np.ndarray:
+    """Constraint penalty with shapes sim_lr (G,1,C,5), desired_lr (1,P,1,5), etc."""
+    terminal_shortfall = np.maximum(0.0, desired_lr - sim_lr)
+    terminal_penalty = terminal_shortfall.mean(axis=-1)
+    final_shortfall = np.maximum(0.0, desired_lr - lr_final)
+    terminal_penalty = np.maximum(terminal_penalty, final_shortfall.mean(axis=-1))
+    pauc_penalty = np.maximum(0.0, desired_pauc - sim_pauc)
+    return terminal_penalty + pauc_penalty
+
+
+def _compute_relabel_scores(
+    stack: _GroupStack,
+    profile_df: pd.DataFrame,
+    w_pauc: float,
+    w_dose: float,
+    w_threshold: float,
+    w_constraint: float,
+    use_torch: bool = False,
+    torch_device: Optional["torch.device"] = None,
+) -> np.ndarray:
+    """Score all (group, profile, candidate) triples; returns NumPy array (G, P, C)."""
+    desired_pauc_np = profile_df["desired_P_AUC"].to_numpy(dtype=np.float64)
+    desired_lr_np = profile_df[[f"desired_LR{i}" for i in range(1, 6)]].to_numpy(dtype=np.float64)
+
+    if use_torch:
+        assert _TORCH_AVAILABLE and torch is not None and torch_device is not None
+        dev = torch_device
+
+        def t(arr: np.ndarray) -> "torch.Tensor":
+            return torch.tensor(np.array(arr, copy=True), device=dev, dtype=torch.float64)
+
+        sim_lr = t(stack.sim_lr).unsqueeze(1)
+        lr_final = t(stack.lr_final).unsqueeze(1)
+        desired_lr = t(desired_lr_np).unsqueeze(0).unsqueeze(2)
+        desired_pauc = t(desired_pauc_np)
+
+        mean_abs_lr_error = (sim_lr - desired_lr).abs().mean(dim=-1)
+        sim_pauc = t(stack.pauc).unsqueeze(1)
+        pauc_error = (sim_pauc - desired_pauc.unsqueeze(0).unsqueeze(2)).abs()
+        dose_norm = t(stack.dose_norm).unsqueeze(1)
+        threshold_norm = t(stack.threshold_norm).unsqueeze(1)
+
+        terminal_shortfall = torch.clamp(desired_lr - sim_lr, min=0.0)
+        terminal_penalty = terminal_shortfall.mean(dim=-1)
+        final_shortfall = torch.clamp(desired_lr - lr_final, min=0.0)
+        terminal_penalty = torch.maximum(terminal_penalty, final_shortfall.mean(dim=-1))
+        pauc_penalty = torch.clamp(desired_pauc.unsqueeze(0).unsqueeze(2) - sim_pauc, min=0.0)
+        constraint_violation = terminal_penalty + pauc_penalty
+
+        scores = (
+            mean_abs_lr_error
+            + w_pauc * pauc_error
+            + w_dose * dose_norm
+            - w_threshold * threshold_norm
+            + w_constraint * constraint_violation
+        )
+        return scores.detach().cpu().numpy()
+
+    sim_lr = stack.sim_lr[:, None, :, :]
+    lr_final = stack.lr_final[:, None, :, :]
+    desired_lr_b = desired_lr_np[None, :, None, :]
+    mean_abs_lr_error = np.abs(sim_lr - desired_lr_b).mean(axis=-1)
+    sim_pauc = stack.pauc[:, None, :]
+    pauc_error = np.abs(sim_pauc - desired_pauc_np[None, :, None])
+    dose_norm = stack.dose_norm[:, None, :]
+    threshold_norm = stack.threshold_norm[:, None, :]
+    constraint_violation = _vectorized_constraint_violation(
+        sim_lr,
+        desired_lr_b,
+        sim_pauc,
+        desired_pauc_np[None, :, None],
+        lr_final,
+    )
+    return (
+        mean_abs_lr_error
+        + w_pauc * pauc_error
+        + w_dose * dose_norm
+        - w_threshold * threshold_norm
+        + w_constraint * constraint_violation
+    )
+
+
+def _mean_tthr_distance(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Mean absolute Tthr distance across 5 targets; a,b shape (..., 5)."""
+    return np.mean(np.abs(a - b), axis=-1)
+
+
+def _softmax_entropy(probs: np.ndarray) -> np.ndarray:
+    p = np.clip(probs, 1e-30, 1.0)
+    return -np.sum(p * np.log(p), axis=-1)
+
+
+def _select_included_sorted_mask(
+    sorted_scores: np.ndarray,
+    config: RelabelConfig,
+) -> np.ndarray:
+    """Return boolean mask (G, P, C) in sorted-score order for included candidates."""
+    _g, _p, c_count = sorted_scores.shape
+    k = max(1, min(config.top_k, c_count))
+    mask = np.zeros(sorted_scores.shape, dtype=bool)
+    mask[..., :k] = True
+    return mask
+
+
+def _apply_relabel_policy(
+    scores: np.ndarray,
+    stack: _GroupStack,
+    config: RelabelConfig,
+) -> Dict[str, np.ndarray]:
+    """Select candidates, softmax weights, and supervised targets for all (G,P)."""
+    g_count, p_count, c_count = scores.shape
+    order = np.argsort(scores, axis=-1, kind="stable")
+    sorted_scores = np.take_along_axis(scores, order, axis=-1)
+    best_score = sorted_scores[..., 0]
+    second_score = np.where(
+        c_count > 1,
+        sorted_scores[..., 1],
+        sorted_scores[..., 0],
+    )
+
+    excluded = np.zeros((g_count, p_count), dtype=bool)
+    if config.drop_infeasible_profiles and config.acceptable_threshold is not None:
+        excluded = best_score > float(config.acceptable_threshold)
+
+    included_sorted = _select_included_sorted_mask(sorted_scores, config)
+    k_sel = max(1, min(config.top_k, c_count))
+    tau = _estimate_soft_tau_batch(sorted_scores[..., :k_sel], config.soft_tau)
+
+    score_min = np.nanmin(
+        np.where(included_sorted, sorted_scores, np.nan),
+        axis=-1,
+        keepdims=True,
+    )
+    logits = np.exp(-(sorted_scores - score_min) / tau[..., None])
+    logits = np.where(included_sorted, logits, 0.0)
+    denom = logits.sum(axis=-1, keepdims=True)
+    denom = np.where(denom <= 0, 1.0, denom)
+    probs_sorted = logits / denom
+
+    included_mask = np.zeros((g_count, p_count, c_count), dtype=bool)
+    probs = np.zeros((g_count, p_count, c_count), dtype=np.float64)
+    g_grid, p_grid = np.meshgrid(np.arange(g_count), np.arange(p_count), indexing="ij")
+    for pos in range(c_count):
+        cand = order[:, :, pos]
+        included_mask[g_grid, p_grid, cand] = included_sorted[:, :, pos]
+        probs[g_grid, p_grid, cand] = probs_sorted[:, :, pos]
+
+    effective_k = included_mask.sum(axis=-1).astype(np.int64)
+    tthr = stack.tthr[:, None, :, :]
+    weighted_mean = np.sum(probs[..., None] * tthr, axis=2)
+    weighted_var = np.sum(probs[..., None] * (tthr - weighted_mean[..., None, :]) ** 2, axis=2)
+    weighted_std = np.sqrt(np.maximum(weighted_var, 0.0))
+    u_vals = stack.u_max[:, None, :]
+    soft_u_max = np.sum(probs * u_vals, axis=-1)
+    u_var = np.sum(probs * (u_vals - soft_u_max[..., None]) ** 2, axis=-1)
+    weighted_u_max_std = np.sqrt(np.maximum(u_var, 0.0))
+
+    best_idx = order[..., 0]
+    top1_tthr = np.take_along_axis(tthr, best_idx[..., None, None], axis=2).squeeze(2)
+    dist_top1 = _mean_tthr_distance(weighted_mean, top1_tthr)
+
+    dist_all = np.mean(
+        np.abs(tthr - weighted_mean[..., None, :]),
+        axis=-1,
+    )
+    dist_nearest = np.min(
+        np.where(included_mask, dist_all, np.inf),
+        axis=-1,
+    )
+    dist_nearest = np.where(np.isfinite(dist_nearest), dist_nearest, 0.0)
+
+    selected_scores = np.where(included_mask, scores, np.nan)
+    score_range = (
+        np.nanmax(selected_scores, axis=-1) - np.nanmin(selected_scores, axis=-1)
+    )
+    score_range = np.where(np.isfinite(score_range), score_range, 0.0)
+    entropy = _softmax_entropy(probs)
+
+    rank = order.argsort(axis=-1) + 1
+
+    return {
+        "order": order,
+        "sorted_scores": sorted_scores,
+        "best_score": best_score,
+        "second_score": second_score,
+        "score_margin": second_score - best_score,
+        "excluded": excluded,
+        "included_mask": included_mask,
+        "probs": probs,
+        "effective_k": effective_k,
+        "weighted_mean": weighted_mean,
+        "weighted_std": weighted_std,
+        "weighted_u_max_std": weighted_u_max_std,
+        "soft_u_max": soft_u_max,
+        "tau": tau,
+        "dist_top1": dist_top1,
+        "dist_nearest": dist_nearest,
+        "selected_k_score_range": score_range,
+        "softmax_entropy": entropy,
+        "best_idx": best_idx,
+        "rank": rank,
+    }
+
+
+def _build_relabel_outputs(
+    stack: _GroupStack,
+    profile_df: pd.DataFrame,
+    scores: np.ndarray,
+    config: RelabelConfig,
+    w_pauc: float,
+) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, Dict[str, object]]:
+    policy = _apply_relabel_policy(scores, stack, config)
+    g_count, p_count, c_count = scores.shape
+
+    desired_lr_arr = profile_df[[f"desired_LR{i}" for i in range(1, 6)]].to_numpy(dtype=np.float64)
+    desired_pauc_arr = profile_df["desired_P_AUC"].to_numpy(dtype=np.float64)
+    profile_ids = profile_df["desired_profile_id"].to_numpy(dtype=np.int64)
+
+    mean_abs_lr_error = np.abs(
+        stack.sim_lr[:, None, :, :] - desired_lr_arr[None, :, None, :]
+    ).mean(axis=-1)
+    pauc_error = np.abs(stack.pauc[:, None, :] - desired_pauc_arr[None, :, None])
+    constraint_violation = _vectorized_constraint_violation(
+        stack.sim_lr[:, None, :, :],
+        desired_lr_arr[None, :, None, :],
+        stack.pauc[:, None, :],
+        desired_pauc_arr[None, :, None],
+        stack.lr_final[:, None, :, :],
+    )
+
+    retained_mask = ~policy["excluded"]
+    gi_grid, pi_grid = np.meshgrid(np.arange(g_count), np.arange(p_count), indexing="ij")
+    gi_flat = gi_grid[retained_mask]
+    pi_flat = pi_grid[retained_mask]
+    if gi_flat.size == 0:
+        raise ValueError("Soft relabel produced 0 supervised rows after profile exclusion.")
+
+    best_c = policy["best_idx"][gi_flat, pi_flat]
+    weighted_std = policy["weighted_std"][gi_flat, pi_flat]
+    mean_target_std = weighted_std.mean(axis=1)
+    y_targets = policy["weighted_mean"][gi_flat, pi_flat]
+
+    x_bio = pd.DataFrame(stack.bio_values[gi_flat], columns=BIO_COLS)
+    x_kpi = pd.DataFrame(
+        {
+            "P_AUC": desired_pauc_arr[pi_flat],
+            **{f"LR{i}": desired_lr_arr[pi_flat, i - 1] for i in range(1, 6)},
+        }
+    )
+    X_relabel = pd.concat([x_bio, x_kpi], axis=1)[X_FEATURE_COLS]
+    y_relabel = pd.DataFrame(y_targets, columns=TARGET_COLS_MAIN)
+
+    sample_metadata_df = pd.DataFrame(
+        {
+            "row_id": np.arange(len(gi_flat), dtype=np.int64),
+            "bio_id": stack.bio_ids[gi_flat],
+            "desired_profile_id": profile_ids[pi_flat],
+            "selected_original_row_index": stack.row_idx[gi_flat, best_c],
+            "selected_controller_id": stack.controller_id[gi_flat, best_c],
+            "desired_P_AUC": desired_pauc_arr[pi_flat],
+            **{f"desired_LR{i}": desired_lr_arr[pi_flat, i - 1] for i in range(1, 6)},
+            "selected_simulated_P_AUC": stack.pauc[gi_flat, best_c],
+            **{
+                f"selected_simulated_LR{i}": stack.sim_lr[gi_flat, best_c, i - 1]
+                for i in range(1, 6)
+            },
+            "lr_error": mean_abs_lr_error[gi_flat, pi_flat, best_c],
+            "pauc_error": pauc_error[gi_flat, pi_flat, best_c],
+            "match_error_no_dose": mean_abs_lr_error[gi_flat, pi_flat, best_c]
+            + w_pauc * pauc_error[gi_flat, pi_flat, best_c],
+            "dose_norm": stack.dose_norm[gi_flat, best_c],
+            "threshold_norm": stack.threshold_norm[gi_flat, best_c],
+            "selection_score": policy["best_score"][gi_flat, pi_flat],
+            "constraint_violation": constraint_violation[gi_flat, pi_flat, best_c],
+            "final_score": policy["best_score"][gi_flat, pi_flat],
+            "target_uncertainty": mean_target_std,
+            "target_uncertainty_norm": 0.0,
+            "soft_u_max": policy["soft_u_max"][gi_flat, pi_flat],
+            "softmax_tau_used": policy["tau"][gi_flat, pi_flat],
+            "top_k_candidates": policy["effective_k"][gi_flat, pi_flat],
+            "n_group_candidates": int(c_count),
+            "relabel_mode": "fixed_topk",
+            "effective_k": policy["effective_k"][gi_flat, pi_flat],
+            "top1_score": policy["best_score"][gi_flat, pi_flat],
+            "top2_score": policy["second_score"][gi_flat, pi_flat],
+            "score_margin": policy["score_margin"][gi_flat, pi_flat],
+            "selected_k_score_range": policy["selected_k_score_range"][gi_flat, pi_flat],
+            "softmax_entropy": policy["softmax_entropy"][gi_flat, pi_flat],
+            **{
+                f"weighted_Tthr_std_{i}": weighted_std[:, i - 1]
+                for i in range(1, 6)
+            },
+            "weighted_Tthr_mean_std": mean_target_std,
+            "weighted_u_max_std": policy["weighted_u_max_std"][gi_flat, pi_flat],
+            "nearest_candidate_distance": policy["dist_nearest"][gi_flat, pi_flat],
+            "soft_label_to_top1_distance": policy["dist_top1"][gi_flat, pi_flat],
+            "soft_label_to_nearest_candidate_distance": policy["dist_nearest"][gi_flat, pi_flat],
+        }
+    )
+
+    sample_weights_df = pd.DataFrame(
+        {
+            "row_id": np.arange(len(gi_flat), dtype=np.int64),
+            "sample_weight": 1.0,
+            "target_uncertainty": mean_target_std,
+            "target_uncertainty_norm": 0.0,
+        }
+    )
+
+    gi_cand = np.repeat(np.arange(g_count), p_count * c_count)
+    pi_cand = np.tile(np.repeat(np.arange(p_count), c_count), g_count)
+    ci_cand = np.tile(np.arange(c_count), g_count * p_count)
+    supervised_map = -np.ones((g_count, p_count), dtype=np.int64)
+    row_counter = 0
+    for gi in range(g_count):
+        for pi in range(p_count):
+            if retained_mask[gi, pi]:
+                supervised_map[gi, pi] = row_counter
+                row_counter += 1
+    sup_ids = supervised_map[gi_cand, pi_cand]
+
+    score_delta = scores[gi_cand, pi_cand, ci_cand] - policy["best_score"][gi_cand, pi_cand]
+    cand_dict: Dict[str, object] = {
+        "supervised_sample_id": sup_ids,
+        "bio_id": stack.bio_ids[gi_cand],
+        "desired_profile_id": profile_ids[pi_cand],
+        "candidate_rank": policy["rank"][gi_cand, pi_cand, ci_cand],
+        "controller_id": stack.controller_id[gi_cand, ci_cand],
+        "final_score": scores[gi_cand, pi_cand, ci_cand],
+        "final_score_delta_from_best": score_delta,
+        "softmax_weight": policy["probs"][gi_cand, pi_cand, ci_cand],
+        "included_in_soft_label": policy["included_mask"][gi_cand, pi_cand, ci_cand],
+        "in_top_k": policy["included_mask"][gi_cand, pi_cand, ci_cand],
+        "u_max": stack.u_max[gi_cand, ci_cand],
+        **{f"Tthr_{i}": stack.tthr[gi_cand, ci_cand, i - 1] for i in range(1, 6)},
+        "simulated_P_AUC": stack.pauc[gi_cand, ci_cand],
+        **{f"simulated_LR{i}": stack.sim_lr[gi_cand, ci_cand, i - 1] for i in range(1, 6)},
+        "mean_abs_lr_error": mean_abs_lr_error[gi_cand, pi_cand, ci_cand],
+        "pauc_error": pauc_error[gi_cand, pi_cand, ci_cand],
+        "dose_norm": stack.dose_norm[gi_cand, ci_cand],
+        "threshold_norm": stack.threshold_norm[gi_cand, ci_cand],
+        "constraint_violation": constraint_violation[gi_cand, pi_cand, ci_cand],
+    }
+    if stack.total_dosage is not None:
+        cand_dict["total_dosage_ug_per_mL"] = stack.total_dosage[gi_cand, ci_cand]
+    candidate_table_df = pd.DataFrame(cand_dict)
+
+    diag = {
+        "raw_profile_count": int(g_count * p_count),
+        "retained_profile_count": int(retained_mask.sum()),
+        "excluded_profile_count": int(policy["excluded"].sum()),
+        "retained_fraction": float(retained_mask.mean()),
+        "effective_k": policy["effective_k"][retained_mask],
+        "score_margin": policy["score_margin"][retained_mask],
+        "softmax_entropy": policy["softmax_entropy"][retained_mask],
+        "target_uncertainty": mean_target_std,
+        "dist_top1": policy["dist_top1"][retained_mask],
+        "dist_nearest": policy["dist_nearest"][retained_mask],
+        "y_targets": y_targets,
+        "weighted_std": weighted_std,
+    }
+    return X_relabel, y_relabel, sample_metadata_df, sample_weights_df, candidate_table_df, diag
+
+
+def _relabel_segment_worker(
+    segment_slice: slice,
+    stack: _GroupStack,
+    profile_df: pd.DataFrame,
+    w_pauc: float,
+    w_dose: float,
+    w_threshold: float,
+    w_constraint: float,
+    config: RelabelConfig,
+) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, Dict[str, object]]:
+    segment_stack = _GroupStack(
+        bio_ids=stack.bio_ids[segment_slice],
+        row_idx=stack.row_idx[segment_slice],
+        controller_id=stack.controller_id[segment_slice],
+        sim_lr=stack.sim_lr[segment_slice],
+        lr_final=stack.lr_final[segment_slice],
+        pauc=stack.pauc[segment_slice],
+        dose_norm=stack.dose_norm[segment_slice],
+        threshold_norm=stack.threshold_norm[segment_slice],
+        u_max=stack.u_max[segment_slice],
+        tthr=stack.tthr[segment_slice],
+        bio_values=stack.bio_values[segment_slice],
+        total_dosage=stack.total_dosage[segment_slice] if stack.total_dosage is not None else None,
+    )
+    scores = _compute_relabel_scores(
+        segment_stack,
+        profile_df,
+        w_pauc,
+        w_dose,
+        w_threshold,
+        w_constraint,
+        use_torch=False,
+    )
+    return _build_relabel_outputs(
+        segment_stack,
+        profile_df,
+        scores,
+        config=config,
+        w_pauc=w_pauc,
+    )
+
+
+def _merge_relabel_segment_outputs(
+    segments: List[Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, Dict[str, object]]],
+) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, Dict[str, object]]:
+    X_relabel = pd.concat([seg[0] for seg in segments], ignore_index=True)
+    y_relabel = pd.concat([seg[1] for seg in segments], ignore_index=True)
+    sample_metadata_df = pd.concat([seg[2] for seg in segments], ignore_index=True)
+    sample_weights_df = pd.concat([seg[3] for seg in segments], ignore_index=True)
+    candidate_parts: List[pd.DataFrame] = []
+    offset = 0
+    for seg in segments:
+        cand = seg[4].copy()
+        mask = cand["supervised_sample_id"].to_numpy(dtype=np.int64) >= 0
+        cand.loc[mask, "supervised_sample_id"] = cand.loc[mask, "supervised_sample_id"] + offset
+        candidate_parts.append(cand)
+        offset += len(seg[2])
+    candidate_table_df = pd.concat(candidate_parts, ignore_index=True)
+    sample_metadata_df = sample_metadata_df.reset_index(drop=True)
+    sample_weights_df = sample_weights_df.reset_index(drop=True)
+    sample_metadata_df["row_id"] = np.arange(len(sample_metadata_df), dtype=np.int64)
+    sample_weights_df["row_id"] = sample_metadata_df["row_id"].to_numpy()
+
+    merged_diag: Dict[str, object] = {
+        "raw_profile_count": 0,
+        "retained_profile_count": 0,
+        "excluded_profile_count": 0,
+        "effective_k": [],
+        "score_margin": [],
+        "softmax_entropy": [],
+        "target_uncertainty": [],
+        "dist_top1": [],
+        "dist_nearest": [],
+        "y_targets": [],
+        "weighted_std": [],
+    }
+    for seg in segments:
+        d = seg[5]
+        merged_diag["raw_profile_count"] = int(merged_diag["raw_profile_count"]) + int(d["raw_profile_count"])
+        merged_diag["retained_profile_count"] = int(merged_diag["retained_profile_count"]) + int(
+            d["retained_profile_count"]
+        )
+        merged_diag["excluded_profile_count"] = int(merged_diag["excluded_profile_count"]) + int(
+            d["excluded_profile_count"]
+        )
+        for key in ("effective_k", "score_margin", "softmax_entropy", "target_uncertainty", "dist_top1", "dist_nearest"):
+            arr = d[key]
+            if isinstance(merged_diag[key], list) and len(merged_diag[key]) == 0:
+                merged_diag[key] = np.asarray(arr)
+            else:
+                merged_diag[key] = np.concatenate([merged_diag[key], np.asarray(arr)])
+        merged_diag["y_targets"] = (
+            d["y_targets"]
+            if isinstance(merged_diag["y_targets"], list) and len(merged_diag["y_targets"]) == 0
+            else np.concatenate([merged_diag["y_targets"], d["y_targets"]])
+        )
+        merged_diag["weighted_std"] = (
+            d["weighted_std"]
+            if isinstance(merged_diag["weighted_std"], list) and len(merged_diag["weighted_std"]) == 0
+            else np.concatenate([merged_diag["weighted_std"], d["weighted_std"]])
+        )
+    raw_pc = int(merged_diag["raw_profile_count"])
+    retained_pc = int(merged_diag["retained_profile_count"])
+    merged_diag["retained_fraction"] = retained_pc / raw_pc if raw_pc else 0.0
+    return X_relabel, y_relabel, sample_metadata_df, sample_weights_df, candidate_table_df, merged_diag
+
+
+def run_vectorized_soft_relabel(
+    stack: _GroupStack,
+    profile_df: pd.DataFrame,
+    w_pauc: float,
+    w_dose: float,
+    w_threshold: float,
+    w_constraint: float,
+    config: RelabelConfig,
+    device: str = "auto",
+    n_jobs: int = 1,
+    chunk_size: int = 256,
+    precomputed_scores: Optional[np.ndarray] = None,
+) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, Dict[str, object], str]:
+    """Vectorized relabel with optional GPU scoring and CPU segment parallelism."""
+    resolved_device = resolve_relabel_device(device)
+    g_count = len(stack.bio_ids)
+    t0 = time.perf_counter()
+
+    if precomputed_scores is not None:
+        scores = precomputed_scores
+        backend = "precomputed_scores"
+    elif resolved_device == "cuda":
+        assert _TORCH_AVAILABLE and torch is not None
+        torch_device = torch.device("cuda")
+        score_chunks: List[np.ndarray] = []
+        for start in range(0, g_count, chunk_size):
+            end = min(start + chunk_size, g_count)
+            segment = _GroupStack(
+                bio_ids=stack.bio_ids[start:end],
+                row_idx=stack.row_idx[start:end],
+                controller_id=stack.controller_id[start:end],
+                sim_lr=stack.sim_lr[start:end],
+                lr_final=stack.lr_final[start:end],
+                pauc=stack.pauc[start:end],
+                dose_norm=stack.dose_norm[start:end],
+                threshold_norm=stack.threshold_norm[start:end],
+                u_max=stack.u_max[start:end],
+                tthr=stack.tthr[start:end],
+                bio_values=stack.bio_values[start:end],
+            )
+            with torch.inference_mode():
+                score_chunks.append(
+                    _compute_relabel_scores(
+                        segment,
+                        profile_df,
+                        w_pauc,
+                        w_dose,
+                        w_threshold,
+                        w_constraint,
+                        use_torch=True,
+                        torch_device=torch_device,
+                    )
+                )
+            del segment
+        scores = np.concatenate(score_chunks, axis=0)
+        backend = f"gpu/cuda (chunk_size={chunk_size})"
+    elif n_jobs > 1 and g_count > 1:
+        from joblib import Parallel, delayed
+
+        n_segments = min(n_jobs, g_count)
+        segment_bounds = np.linspace(0, g_count, n_segments + 1, dtype=int)
+        slices = [slice(int(segment_bounds[i]), int(segment_bounds[i + 1])) for i in range(n_segments)]
+        segments = Parallel(n_jobs=n_jobs, verbose=10)(
+            delayed(_relabel_segment_worker)(
+                seg_slice,
+                stack,
+                profile_df,
+                w_pauc,
+                w_dose,
+                w_threshold,
+                w_constraint,
+                config,
+            )
+            for seg_slice in slices
+            if seg_slice.stop > seg_slice.start
+        )
+        outputs = _merge_relabel_segment_outputs(segments)
+        elapsed = time.perf_counter() - t0
+        print(
+            f"Relabel scoring finished in {elapsed:.2f}s "
+            f"(cpu vectorized, n_jobs={n_jobs}, segments={len(segments)})",
+            flush=True,
+        )
+        return (*outputs, f"cpu/parallel (n_jobs={n_jobs})")
+    else:
+        scores = _compute_relabel_scores(
+            stack,
+            profile_df,
+            w_pauc,
+            w_dose,
+            w_threshold,
+            w_constraint,
+            use_torch=False,
+        )
+        backend = "cpu/vectorized"
+
+    outputs = _build_relabel_outputs(
+        stack,
+        profile_df,
+        scores,
+        config=config,
+        w_pauc=w_pauc,
+    )
+    elapsed = time.perf_counter() - t0
+    print(f"Relabel scoring finished in {elapsed:.2f}s ({backend})", flush=True)
+    return (*outputs, backend)
+
+
+def sanity_check_soft_relabel_outputs(
+    X_df: pd.DataFrame,
+    X_physics_df: pd.DataFrame,
+    y_df: pd.DataFrame,
+    sample_metadata_df: pd.DataFrame,
+    sample_weights_df: pd.DataFrame,
+) -> None:
+    n = len(X_df)
+    if len(y_df) != n or len(sample_metadata_df) != n or len(sample_weights_df) != n:
+        raise ValueError(
+            "X/y/sample_metadata/sample_weights row counts must match: "
+            f"X={len(X_df)}, y={len(y_df)}, metadata={len(sample_metadata_df)}, "
+            f"weights={len(sample_weights_df)}."
+        )
+    if len(X_physics_df) != n:
+        raise ValueError(
+            f"X_features_physics row count ({len(X_physics_df)}) must match X ({n})."
+        )
+    if list(y_df.columns) != TARGET_COLS_MAIN or y_df.shape[1] != 5:
+        raise ValueError("y_targets.csv must contain exactly 5 Tthr columns.")
+    numeric_check_frames = [
+        ("X_features", X_df),
+        ("X_features_physics", X_physics_df),
+        ("y_targets", y_df),
+        ("sample_weights", sample_weights_df),
+    ]
+    for name, frame in numeric_check_frames:
+        if not np.isfinite(frame.to_numpy(dtype=float)).all():
+            raise ValueError(f"{name} contains NaN or infinite values.")
+    meta_numeric = sample_metadata_df.drop(columns=["relabel_mode"], errors="ignore")
+    if not np.isfinite(meta_numeric.to_numpy(dtype=float)).all():
+        raise ValueError("sample_metadata contains NaN or infinite values in numeric columns.")
+    if "bio_id" not in sample_metadata_df.columns:
+        raise ValueError("sample_metadata.csv must contain bio_id for group-aware splitting.")
+    if sample_metadata_df["bio_id"].isna().any():
+        raise ValueError("sample_metadata bio_id contains missing values.")
+
+
+def _relabel_warnings(diag: Dict[str, object], config: RelabelConfig) -> Dict[str, bool]:
+    retained_fraction = float(diag.get("retained_fraction", 1.0))
+    eff_k = np.asarray(diag.get("effective_k", []), dtype=float)
+    warnings_out = {
+        "warning_if_retained_fraction_below_0.25": retained_fraction < 0.25,
+        "warning_if_effective_k_almost_always_equals_kmax": False,
+        "warning_if_effective_k_almost_always_equals_1": False,
+    }
+    if eff_k.size:
+        warnings_out["warning_if_effective_k_almost_always_equals_kmax"] = float(
+            np.mean(eff_k >= min(config.top_k, eff_k.max(initial=1)))
+        ) > 0.95
+        warnings_out["warning_if_effective_k_almost_always_equals_1"] = float(np.mean(eff_k <= 1.0)) > 0.95
+    return warnings_out
+
+
+def _build_relabel_summary_block(
+    config: RelabelConfig,
+    diag: Dict[str, object],
+    relabel_backend: str,
+    device: str,
+    n_jobs: int,
+    chunk_size: int,
+) -> Dict[str, object]:
+    eff_k = np.asarray(diag.get("effective_k", []), dtype=float)
+    score_margin = np.asarray(diag.get("score_margin", []), dtype=float)
+    entropy = np.asarray(diag.get("softmax_entropy", []), dtype=float)
+    target_unc = np.asarray(diag.get("target_uncertainty", []), dtype=float)
+    warnings_out = _relabel_warnings(diag, config)
+    return {
+        "top_k": int(config.top_k),
+        "soft_tau": config.soft_tau,
+        "acceptable_threshold": config.acceptable_threshold,
+        "drop_infeasible_profiles": bool(config.drop_infeasible_profiles),
+        "raw_profile_count": int(diag.get("raw_profile_count", 0)),
+        "retained_profile_count": int(diag.get("retained_profile_count", 0)),
+        "excluded_profile_count": int(diag.get("excluded_profile_count", 0)),
+        "retained_fraction": float(diag.get("retained_fraction", 0.0)),
+        "effective_k_mean": float(eff_k.mean()) if eff_k.size else None,
+        "effective_k_median": float(np.median(eff_k)) if eff_k.size else None,
+        "effective_k_distribution": distribution_summary(pd.Series(eff_k)) if eff_k.size else {},
+        "score_margin_median": float(np.median(score_margin)) if score_margin.size else None,
+        "softmax_entropy_median": float(np.median(entropy)) if entropy.size else None,
+        "target_uncertainty_median": float(np.median(target_unc)) if target_unc.size else None,
+        **warnings_out,
+        "leakage_safe_notes": LEAKAGE_SAFE_RELABEL_NOTES,
+        "sample_weight_rule": "1 / (target_uncertainty_norm + 0.05)",
+        "backend": relabel_backend,
+        "device": device,
+        "n_jobs": int(n_jobs),
+        "chunk_size": int(chunk_size),
+    }
+
+
+def _print_relabel_console_summary(
+    config: RelabelConfig,
+    diag: Dict[str, object],
+    outdir: str,
+    n_samples: int,
+) -> None:
+    summary = _build_relabel_summary_block(config, diag, "", "", 0, 0)
+    print(f"top_k: {config.top_k}")
+    print(
+        f"retained samples / raw samples: "
+        f"{summary['retained_profile_count']} / {summary['raw_profile_count']}"
+    )
+    print(f"retained fraction: {summary['retained_fraction']:.4f}")
+    if summary.get("effective_k_mean") is not None:
+        print(
+            f"effective_k mean / median: "
+            f"{summary['effective_k_mean']:.3f} / {summary['effective_k_median']:.3f}"
+        )
+    if summary.get("target_uncertainty_median") is not None:
+        print(f"target_uncertainty median: {summary['target_uncertainty_median']:.6f}")
+    if summary.get("score_margin_median") is not None:
+        print(f"score_margin median: {summary['score_margin_median']:.6f}")
+    dist_top1 = np.asarray(diag.get("dist_top1", []), dtype=float)
+    if dist_top1.size:
+        print(f"soft label to top1 distance (mean): {float(dist_top1.mean()):.6f}")
+    print(f"output directory: {os.path.abspath(outdir)}")
+    print(f"supervised rows written: {n_samples}")
+    for key, active in _relabel_warnings(diag, config).items():
+        if active:
+            print(f"WARNING: {key} is True")
+
+
+def compute_bundle_relabel_warnings(diag: Dict[str, object], config: RelabelConfig) -> Dict[str, bool]:
+    """Bundle-mode degeneration / feasibility warnings."""
+    retained_fraction = float(diag.get("retained_fraction", 1.0))
+    eff_k = np.asarray(diag.get("effective_k", []), dtype=float)
+    entropy = np.asarray(diag.get("softmax_entropy", []), dtype=float)
+    kmax = int(config.top_k)
+    log_kmax = float(np.log(max(kmax, 2)))
+    frac_kmax = float(np.mean(eff_k >= kmax)) if eff_k.size else 0.0
+    frac_k1 = float(np.mean(eff_k <= 1.0)) if eff_k.size else 0.0
+    entropy_ratio_median = (
+        float(np.median(entropy / log_kmax)) if entropy.size and log_kmax > 0 else 0.0
+    )
+    return {
+        "warning_degenerated_to_fixed_kmax": frac_kmax > 0.30,
+        "warning_degenerated_to_top1": frac_k1 > 0.70,
+        "warning_near_uniform_weights": entropy_ratio_median > 0.95,
+        "warning_strict_feasibility_filter": retained_fraction < 0.25,
+    }
+
+
+def _compute_relabel_scores_once(
+    stack: _GroupStack,
+    profile_df: pd.DataFrame,
+    w_pauc: float,
+    w_dose: float,
+    w_threshold: float,
+    w_constraint: float,
+    device: str,
+    chunk_size: int,
+) -> Tuple[np.ndarray, str]:
+    resolved_device = resolve_relabel_device(device)
+    g_count = len(stack.bio_ids)
+    t0 = time.perf_counter()
+    if resolved_device == "cuda":
+        assert _TORCH_AVAILABLE and torch is not None
+        torch_device = torch.device("cuda")
+        score_chunks: List[np.ndarray] = []
+        for start in range(0, g_count, chunk_size):
+            end = min(start + chunk_size, g_count)
+            segment = _GroupStack(
+                bio_ids=stack.bio_ids[start:end],
+                row_idx=stack.row_idx[start:end],
+                controller_id=stack.controller_id[start:end],
+                sim_lr=stack.sim_lr[start:end],
+                lr_final=stack.lr_final[start:end],
+                pauc=stack.pauc[start:end],
+                dose_norm=stack.dose_norm[start:end],
+                threshold_norm=stack.threshold_norm[start:end],
+                u_max=stack.u_max[start:end],
+                tthr=stack.tthr[start:end],
+                bio_values=stack.bio_values[start:end],
+                total_dosage=stack.total_dosage[start:end] if stack.total_dosage is not None else None,
+            )
+            with torch.inference_mode():
+                score_chunks.append(
+                    _compute_relabel_scores(
+                        segment,
+                        profile_df,
+                        w_pauc,
+                        w_dose,
+                        w_threshold,
+                        w_constraint,
+                        use_torch=True,
+                        torch_device=torch_device,
+                    )
+                )
+        scores = np.concatenate(score_chunks, axis=0)
+        backend = f"gpu/cuda (chunk_size={chunk_size})"
+    else:
+        scores = _compute_relabel_scores(
+            stack,
+            profile_df,
+            w_pauc,
+            w_dose,
+            w_threshold,
+            w_constraint,
+            use_torch=False,
+        )
+        backend = "cpu/vectorized"
+    print(f"Candidate score table computed in {time.perf_counter() - t0:.2f}s ({backend})", flush=True)
+    return scores, backend
+
+
+def _prepare_relabel_workspace(
+    microbio_csv: str,
+    pauc_quantiles: List[float],
+    lr_quantiles: List[float],
+    lr_metric: str,
+) -> Tuple[pd.DataFrame, _GroupStack, pd.DataFrame, int, pd.Series, str]:
+    if not os.path.exists(microbio_csv):
+        raise FileNotFoundError(f"Cannot find raw simulation library: {microbio_csv}")
+    raw_df = pd.read_csv(microbio_csv)
+    raw_rows = len(raw_df)
+    lr_cols, lr_metric_used = resolve_lr_columns(raw_df, lr_metric)
+    lr_final_cols = (
+        LR_FINAL_COLS
+        if all(col in raw_df.columns for col in LR_FINAL_COLS)
+        else [f"LR{i}" for i in range(1, 6)]
+    )
+    if LR_TERMINAL_MEDIAN_COLS[0] in raw_df.columns:
+        raw_df["mean_LR_terminal_median"] = raw_df[LR_TERMINAL_MEDIAN_COLS].mean(axis=1)
+    elif all(f"LR{i}" in raw_df.columns for i in range(1, 6)):
+        print(
+            "WARNING: LR_terminal_median_* columns not found; using LR1-LR5 "
+            "to compute mean_LR_terminal_median quantiles."
+        )
+        raw_df["mean_LR_terminal_median"] = raw_df[[f"LR{i}" for i in range(1, 6)]].mean(axis=1)
+    else:
+        raw_df["mean_LR_terminal_median"] = raw_df[lr_cols].mean(axis=1)
+    if "P_AUC" not in raw_df.columns:
+        raise ValueError("MICROBIO.csv must contain P_AUC.")
+    desired_pauc_values = [float(np.quantile(raw_df["P_AUC"], q)) for q in pauc_quantiles]
+    desired_lr_values = [float(np.quantile(raw_df["mean_LR_terminal_median"], q)) for q in lr_quantiles]
+    profile_rows = []
+    profile_id = 0
+    for pauc_q, desired_pauc in zip(pauc_quantiles, desired_pauc_values):
+        for lr_q, desired_mean_lr in zip(lr_quantiles, desired_lr_values):
+            profile_rows.append(
+                {
+                    "desired_profile_id": profile_id,
+                    "pauc_quantile": pauc_q,
+                    "lr_quantile": lr_q,
+                    "desired_P_AUC": desired_pauc,
+                    "desired_mean_LR": desired_mean_lr,
+                    "desired_LR1": desired_mean_lr,
+                    "desired_LR2": desired_mean_lr,
+                    "desired_LR3": desired_mean_lr,
+                    "desired_LR4": desired_mean_lr,
+                    "desired_LR5": desired_mean_lr,
+                }
+            )
+            profile_id += 1
+    profile_df = pd.DataFrame(profile_rows)
+    if "bio_id" not in raw_df.columns:
+        raise ValueError("MICROBIO.csv must contain bio_id for soft relabel group splitting.")
+    grouped = raw_df.groupby("bio_id", sort=False)
+    group_sizes = grouped.size()
+    print("Stacking biological groups for vectorized relabel...", flush=True)
+    stack = _stack_bio_groups(grouped, lr_cols, lr_final_cols)
+    return raw_df, stack, profile_df, raw_rows, group_sizes, lr_metric_used
+
+
+def _normalize_relabel_sample_tables(
+    sample_metadata_df: pd.DataFrame,
+    sample_weights_df: pd.DataFrame,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    uncertainties = sample_weights_df["target_uncertainty"].to_numpy(dtype=np.float64)
+    u_min = float(uncertainties.min())
+    u_max = float(uncertainties.max())
+    u_span = max(u_max - u_min, 1e-12)
+    unc_norm = (uncertainties - u_min) / u_span
+    sample_weights_df = sample_weights_df.copy()
+    sample_metadata_df = sample_metadata_df.copy()
+    sample_weights_df["target_uncertainty_norm"] = unc_norm
+    sample_weights_df["sample_weight"] = 1.0 / (unc_norm + 0.05)
+    sample_metadata_df["target_uncertainty_norm"] = unc_norm
+    sample_metadata_df = sample_metadata_df[SOFT_TTHR_SAMPLE_METADATA_COLS]
+    sample_weights_df = sample_weights_df[SAMPLE_WEIGHTS_COLS]
+    return sample_metadata_df, sample_weights_df
+
+
+def _write_bundle_relabel_subdirectory(
+    outdir: str,
+    *,
+    X_relabel: pd.DataFrame,
+    y_relabel: pd.DataFrame,
+    sample_metadata_df: pd.DataFrame,
+    sample_weights_df: pd.DataFrame,
+    candidate_table_df: pd.DataFrame,
+    relabel_config: RelabelConfig,
+    relabel_diag: Dict[str, object],
+    relabel_backend: str,
+    device: str,
+    n_jobs: int,
+    chunk_size: int,
+    microbio_csv: str,
+    raw_rows: int,
+    group_sizes: pd.Series,
+    profile_df: pd.DataFrame,
+    lr_metric_used: str,
+    pauc_quantiles: List[float],
+    lr_quantiles: List[float],
+    weights: Dict[str, float],
+) -> Dict[str, object]:
+    os.makedirs(outdir, exist_ok=True)
+    sample_metadata_df, sample_weights_df = _normalize_relabel_sample_tables(
+        sample_metadata_df, sample_weights_df
+    )
+    relabel_uncertainty_df = sample_metadata_df[RELABEL_UNCERTAINTY_SUMMARY_COLS].copy()
+    sanity_check_soft_relabel_outputs(
+        X_relabel,
+        add_physics_features(X_relabel, c_ref=float(weights.get("c_ref", C_REF))),
+        y_relabel,
+        sample_metadata_df,
+        sample_weights_df,
+    )
+    bundle_warnings = compute_bundle_relabel_warnings(relabel_diag, relabel_config)
+    relabel_summary_block = _build_relabel_summary_block(
+        relabel_config,
+        relabel_diag,
+        relabel_backend,
+        device,
+        n_jobs,
+        chunk_size,
+    )
+    relabel_summary_block.update(bundle_warnings)
+    summary = {
+        "mode": "relabel_tthr_bundle_subdirectory",
+        "target_policy": "tthr_only_supervised",
+        "target_columns": TARGET_COLS_MAIN,
+        **ode_profile_manifest_fields(),
+        "raw_microbio_csv": os.path.abspath(microbio_csv),
+        "raw_rows": raw_rows,
+        "number_of_biological_groups": int(len(group_sizes)),
+        "desired_profile_count": int(len(profile_df)),
+        "generated_supervised_rows": int(len(X_relabel)),
+        "lr_metric_used": lr_metric_used,
+        "pauc_quantiles": pauc_quantiles,
+        "lr_quantiles": lr_quantiles,
+        "weights": {k: v for k, v in weights.items() if k != "c_ref"},
+        "soft_relabel": relabel_summary_block,
+        "bundle_warnings": bundle_warnings,
+    }
+    X_relabel.to_csv(os.path.join(outdir, "X_features.csv"), index=False)
+    y_relabel.to_csv(os.path.join(outdir, "y_targets.csv"), index=False)
+    sample_metadata_df.to_csv(os.path.join(outdir, "sample_metadata.csv"), index=False)
+    sample_weights_df.to_csv(os.path.join(outdir, "sample_weights.csv"), index=False)
+    candidate_table_df.to_csv(os.path.join(outdir, "candidate_score_table.csv"), index=False)
+    relabel_uncertainty_df.to_csv(os.path.join(outdir, "relabel_uncertainty_summary.csv"), index=False)
+    with open(os.path.join(outdir, "soft_relabel_summary.json"), "w", encoding="utf-8") as fh:
+        json.dump(summary, fh, indent=2)
+    _print_relabel_console_summary(relabel_config, relabel_diag, outdir, len(X_relabel))
+    return {"summary": summary, "warnings": bundle_warnings, "diag": relabel_diag, "config": relabel_config}
+
+
+def run_relabel_tthr_bundle(
+    microbio_csv: str,
+    bundle_outdir: str,
+    pauc_quantiles: List[float],
+    lr_quantiles: List[float],
+    w_pauc: float,
+    w_dose: float,
+    w_threshold: float,
+    w_constraint: float,
+    lr_metric: str,
+    fixed_top_k: int = 8,
+    acceptable_threshold: Optional[float] = None,
+    drop_infeasible_profiles: bool = False,
+    device: str = "auto",
+    n_jobs: int = 1,
+    chunk_size: int = 256,
+    c_ref: float = C_REF,
+) -> None:
+    """One-shot relabel bundle: fixed top-k dataset only."""
+    os.makedirs(bundle_outdir, exist_ok=True)
+    _, stack, profile_df, raw_rows, group_sizes, lr_metric_used = _prepare_relabel_workspace(
+        microbio_csv, pauc_quantiles, lr_quantiles, lr_metric
+    )
+    score_weights = {
+        "w_pauc": w_pauc,
+        "w_dose": w_dose,
+        "w_threshold": w_threshold,
+        "w_constraint": w_constraint,
+        "c_ref": c_ref,
+    }
+    scores, score_backend = _compute_relabel_scores_once(
+        stack,
+        profile_df,
+        w_pauc,
+        w_dose,
+        w_threshold,
+        w_constraint,
+        device=device,
+        chunk_size=chunk_size,
+    )
+
+    relabel_config = RelabelConfig(
+        top_k=fixed_top_k,
+        soft_tau="auto",
+        acceptable_threshold=acceptable_threshold,
+        drop_infeasible_profiles=drop_infeasible_profiles,
+    )
+    relabel_config.validate()
+
+    dataset_dir = os.path.join(bundle_outdir, f"fixed_k{fixed_top_k}")
+    print(f"\n=== Bundle: fixed k={fixed_top_k} relabel -> {dataset_dir} ===", flush=True)
+    (
+        X_relabel,
+        y_relabel,
+        meta,
+        weights_df,
+        cand,
+        diag,
+    ) = run_vectorized_soft_relabel(
+        stack=stack,
+        profile_df=profile_df,
+        w_pauc=w_pauc,
+        w_dose=w_dose,
+        w_threshold=w_threshold,
+        w_constraint=w_constraint,
+        config=relabel_config,
+        device=device,
+        n_jobs=n_jobs,
+        chunk_size=chunk_size,
+        precomputed_scores=scores,
+    )[:6]
+    artifacts = _write_bundle_relabel_subdirectory(
+        dataset_dir,
+        X_relabel=X_relabel,
+        y_relabel=y_relabel,
+        sample_metadata_df=meta,
+        sample_weights_df=weights_df,
+        candidate_table_df=cand,
+        relabel_config=relabel_config,
+        relabel_diag=diag,
+        relabel_backend=score_backend,
+        device=device,
+        n_jobs=n_jobs,
+        chunk_size=chunk_size,
+        microbio_csv=microbio_csv,
+        raw_rows=raw_rows,
+        group_sizes=group_sizes,
+        profile_df=profile_df,
+        lr_metric_used=lr_metric_used,
+        pauc_quantiles=pauc_quantiles,
+        lr_quantiles=lr_quantiles,
+        weights=score_weights,
+    )
+
+    manifest = {
+        "mode": "relabel_tthr_bundle",
+        **ode_profile_manifest_fields(),
+        f"fixed_k{fixed_top_k}_dataset_path": os.path.abspath(dataset_dir),
+        "top_k": int(fixed_top_k),
+        "acceptable_threshold": acceptable_threshold,
+        "drop_infeasible_profiles": bool(drop_infeasible_profiles),
+        f"fixed_k{fixed_top_k}_warnings": artifacts["warnings"],
+        "leakage_safe_notes": BUNDLE_LEAKAGE_SAFE_NOTES,
+        "score_backend": score_backend,
+    }
+    formal_dir = publish_formal_dataset(
+        dataset_dir,
+        route="manual_relabel_bundle",
+        manifest_extra={"fixed_top_k": int(fixed_top_k)},
+    )
+    manifest["formal_dataset_path"] = os.path.abspath(formal_dir)
+    manifest_path = os.path.join(bundle_outdir, "bundle_manifest.json")
+    with open(manifest_path, "w", encoding="utf-8") as fh:
+        json.dump(manifest, fh, indent=2)
+    print(f"\nSaved bundle manifest: {manifest_path}")
+    print(f"Canonical formal dataset: {formal_dir}")
+    print(f"Fixed-k{fixed_top_k} dataset: {dataset_dir}")
+
+
+def _sensitivity_row(
+    setting_name: str,
+    config: RelabelConfig,
+    diag: Dict[str, object],
+) -> Dict[str, object]:
+    eff_k = np.asarray(diag.get("effective_k", []), dtype=float)
+    target_unc = np.asarray(diag.get("target_uncertainty", []), dtype=float)
+    dist_top1 = np.asarray(diag.get("dist_top1", []), dtype=float)
+    dist_near = np.asarray(diag.get("dist_nearest", []), dtype=float)
+    y_targets = np.asarray(diag.get("y_targets", []), dtype=float)
+    weighted_std = np.asarray(diag.get("weighted_std", []), dtype=float)
+    row: Dict[str, object] = {
+        "setting": setting_name,
+        "top_k": config.top_k,
+        "n_samples": int(diag.get("retained_profile_count", 0)),
+        "retained_fraction": float(diag.get("retained_fraction", 0.0)),
+        "mean_effective_k": float(eff_k.mean()) if eff_k.size else None,
+        "median_effective_k": float(np.median(eff_k)) if eff_k.size else None,
+        "target_uncertainty_mean": float(target_unc.mean()) if target_unc.size else None,
+        "target_uncertainty_median": float(np.median(target_unc)) if target_unc.size else None,
+        "soft_label_to_top1_distance_mean": float(dist_top1.mean()) if dist_top1.size else None,
+        "soft_label_to_nearest_candidate_distance_mean": float(dist_near.mean()) if dist_near.size else None,
+        "estimated_label_smoothness": float(dist_top1.mean()) if dist_top1.size else None,
+        "estimated_ambiguity": float(np.median(np.asarray(diag.get("softmax_entropy", []), dtype=float)))
+        if np.asarray(diag.get("softmax_entropy", [])).size
+        else None,
+    }
+    if y_targets.size:
+        for j in range(min(5, y_targets.shape[1])):
+            row[f"Tthr_{j + 1}_variance"] = float(np.var(y_targets[:, j]))
+    if weighted_std.size:
+        for j in range(min(5, weighted_std.shape[1])):
+            row[f"Tthr_{j + 1}_weighted_std_mean"] = float(np.mean(weighted_std[:, j]))
+    return row
+
+
+def run_relabel_sensitivity(
+    stack: _GroupStack,
+    profile_df: pd.DataFrame,
+    scores: np.ndarray,
+    w_pauc: float,
+    base_config: RelabelConfig,
+    outdir: str,
+) -> None:
+    """Dataset-level diagnostics comparing fixed-k relabel settings."""
+    settings: List[Tuple[str, RelabelConfig]] = [
+        ("fixed_topk_k1", RelabelConfig(top_k=1, soft_tau=base_config.soft_tau)),
+        ("fixed_topk_k3", RelabelConfig(top_k=3, soft_tau=base_config.soft_tau)),
+        ("fixed_topk_k5", RelabelConfig(top_k=5, soft_tau=base_config.soft_tau)),
+        ("fixed_topk_k8", RelabelConfig(top_k=8, soft_tau=base_config.soft_tau)),
+    ]
+    rows: List[Dict[str, object]] = []
+    for name, cfg in settings:
+        cfg.validate()
+        *_, diag = _build_relabel_outputs(stack, profile_df, scores, config=cfg, w_pauc=w_pauc)
+        rows.append(_sensitivity_row(name, cfg, diag))
+    sens_df = pd.DataFrame(rows)
+    csv_path = os.path.join(outdir, "relabel_sensitivity_summary.csv")
+    json_path = os.path.join(outdir, "relabel_sensitivity_summary.json")
+    sens_df.to_csv(csv_path, index=False)
+    with open(json_path, "w", encoding="utf-8") as fh:
+        json.dump(
+            {
+                "leakage_safe_notes": LEAKAGE_SAFE_RELABEL_NOTES,
+                "settings": rows,
+            },
+            fh,
+            indent=2,
+        )
+    print(f"Saved {csv_path}")
+    print(f"Saved {json_path}")
+
+
+def soft_relabel_tthr_dataset(
+    microbio_csv: str,
+    outdir: str,
+    pauc_quantiles: List[float],
+    lr_quantiles: List[float],
+    w_pauc: float,
+    w_dose: float,
+    w_threshold: float,
+    w_constraint: float,
+    lr_metric: str,
+    relabel_config: RelabelConfig,
+    c_ref: float = C_REF,
+    device: str = "auto",
+    n_jobs: int = 1,
+    chunk_size: int = 256,
+    relabel_sensitivity: bool = False,
+) -> None:
+    """Tthr-only supervised soft relabeling from a raw microbial simulation library."""
+    relabel_config.validate()
+    os.makedirs(outdir, exist_ok=True)
+    _, stack, profile_df, raw_rows, group_sizes, lr_metric_used = _prepare_relabel_workspace(
+        microbio_csv, pauc_quantiles, lr_quantiles, lr_metric
+    )
+
+    if relabel_sensitivity:
+        print("Computing candidate scores for relabel sensitivity...", flush=True)
+        scores, _ = _compute_relabel_scores_once(
+            stack,
+            profile_df,
+            w_pauc,
+            w_dose,
+            w_threshold,
+            w_constraint,
+            device=device,
+            chunk_size=chunk_size,
+        )
+        run_relabel_sensitivity(stack, profile_df, scores, w_pauc, relabel_config, outdir)
+
+    (
+        X_relabel,
+        y_relabel,
+        sample_metadata_df,
+        sample_weights_df,
+        candidate_table_df,
+        relabel_diag,
+        relabel_backend,
+    ) = run_vectorized_soft_relabel(
+        stack=stack,
+        profile_df=profile_df,
+        w_pauc=w_pauc,
+        w_dose=w_dose,
+        w_threshold=w_threshold,
+        w_constraint=w_constraint,
+        config=relabel_config,
+        device=device,
+        n_jobs=n_jobs,
+        chunk_size=chunk_size,
+    )
+
+    if len(X_relabel) == 0:
+        raise ValueError("Soft relabel produced 0 supervised rows.")
+
+    uncertainties = sample_weights_df["target_uncertainty"].to_numpy(dtype=np.float64)
+    u_min = float(uncertainties.min())
+    u_max = float(uncertainties.max())
+    u_span = max(u_max - u_min, 1e-12)
+    unc_norm = (uncertainties - u_min) / u_span
+    sample_weights_df = sample_weights_df.copy()
+    sample_metadata_df = sample_metadata_df.copy()
+    sample_weights_df["target_uncertainty_norm"] = unc_norm
+    sample_weights_df["sample_weight"] = 1.0 / (unc_norm + 0.05)
+    sample_metadata_df["target_uncertainty_norm"] = unc_norm
+    sample_metadata_df = sample_metadata_df[SOFT_TTHR_SAMPLE_METADATA_COLS]
+    sample_weights_df = sample_weights_df[SAMPLE_WEIGHTS_COLS]
+
+    relabel_uncertainty_df = sample_metadata_df[RELABEL_UNCERTAINTY_SUMMARY_COLS].copy()
+
+    X_physics = add_physics_features(X_relabel, c_ref=float(c_ref))
+
+    sanity_check_soft_relabel_outputs(
+        X_relabel,
+        X_physics,
+        y_relabel,
+        sample_metadata_df,
+        sample_weights_df,
+    )
+
+    generated_rows = len(X_relabel)
+    uncertainty_distribution = distribution_summary(sample_weights_df["target_uncertainty"])
+    soft_u_max_distribution = distribution_summary(sample_metadata_df["soft_u_max"])
+    included = candidate_table_df["included_in_soft_label"]
+    selected_u_max_distribution = distribution_summary(candidate_table_df.loc[included, "u_max"])
+
+    relabel_summary_block = _build_relabel_summary_block(
+        relabel_config,
+        relabel_diag,
+        relabel_backend,
+        device,
+        n_jobs,
+        chunk_size,
+    )
+
+    summary = {
+        "mode": "soft_relabel_tthr_dataset",
+        "target_policy": "tthr_only_supervised",
+        "target_columns": TARGET_COLS_MAIN,
+        **ode_profile_manifest_fields(),
+        "raw_microbio_csv": os.path.abspath(microbio_csv),
+        "raw_rows": raw_rows,
+        "number_of_biological_groups": int(len(group_sizes)),
+        "controller_candidates_per_group_min": int(group_sizes.min()) if len(group_sizes) else 0,
+        "controller_candidates_per_group_median": float(group_sizes.median()) if len(group_sizes) else 0.0,
+        "controller_candidates_per_group_max": int(group_sizes.max()) if len(group_sizes) else 0,
+        "desired_profile_count": int(len(profile_df)),
+        "generated_supervised_rows": generated_rows,
+        "uncertainty_quantiles": uncertainty_distribution,
+        "soft_u_max_distribution": soft_u_max_distribution,
+        "selected_topk_u_max_distribution": selected_u_max_distribution,
+        "lr_definition": LR_DEFINITION,
+        "grouping_column": "bio_id",
+        "physics_features": {
+            "C_REF": float(c_ref),
+            "columns": PHYSICS_FEATURE_COLS,
+            "n_physics_columns": len(PHYSICS_FEATURE_COLS),
+        },
+        "weights": {
+            "w_pauc": w_pauc,
+            "w_dose": w_dose,
+            "w_threshold": w_threshold,
+            "w_constraint": w_constraint,
+        },
+        "soft_relabel": relabel_summary_block,
+        "lr_metric_used": lr_metric_used,
+        "pauc_quantiles": pauc_quantiles,
+        "lr_quantiles": lr_quantiles,
+    }
+
+    x_path = os.path.join(outdir, "X_features.csv")
+    x_physics_path = os.path.join(outdir, "X_features_physics.csv")
+    y_path = os.path.join(outdir, "y_targets.csv")
+    sample_metadata_path = os.path.join(outdir, "sample_metadata.csv")
+    sample_weights_path = os.path.join(outdir, "sample_weights.csv")
+    candidate_table_path = os.path.join(outdir, "candidate_score_table.csv")
+    uncertainty_summary_path = os.path.join(outdir, "relabel_uncertainty_summary.csv")
+    summary_path = os.path.join(outdir, "soft_relabel_summary.json")
+
+    X_relabel.to_csv(x_path, index=False)
+    X_physics.to_csv(x_physics_path, index=False)
+    y_relabel.to_csv(y_path, index=False)
+    sample_metadata_df.to_csv(sample_metadata_path, index=False)
+    sample_weights_df.to_csv(sample_weights_path, index=False)
+    candidate_table_df.to_csv(candidate_table_path, index=False)
+    relabel_uncertainty_df.to_csv(uncertainty_summary_path, index=False)
+    with open(summary_path, "w", encoding="utf-8") as fh:
+        json.dump(summary, fh, indent=2)
+
+    _print_relabel_console_summary(relabel_config, relabel_diag, outdir, generated_rows)
+    print(LR_DEFINITION)
+    print("Saved X_features.csv")
+    print("Saved X_features_physics.csv")
+    print("Saved y_targets.csv")
+    print("Saved sample_metadata.csv")
+    print("Saved sample_weights.csv")
+    print("Saved candidate_score_table.csv")
+    print("Saved relabel_uncertainty_summary.csv")
+    print("Saved soft_relabel_summary.json")
+    print(f"Saved {x_path}")
+    print(f"Saved {x_physics_path}")
+    print(f"Saved {y_path}")
+    print(f"Saved {sample_metadata_path}")
+    print(f"Saved {sample_weights_path}")
+    print(f"Saved {candidate_table_path}")
+    print(f"Saved {uncertainty_summary_path}")
+    print(f"Saved {summary_path}")
+
+
+def run_relabel_parameter_screening(
+    *,
+    microbio_csv: str,
+    outdir: str,
+    plan_relabel: Dict[str, object],
+    device: str = "auto",
+    n_jobs: int = 1,
+    chunk_size: int = 256,
+) -> Dict[str, object]:
+    """Lock relabel to plan ``fixed_top_k`` (no k-grid search during screening)."""
+    del microbio_csv, device, n_jobs, chunk_size
+
+    os.makedirs(outdir, exist_ok=True)
+    top_k = int(plan_relabel.get("fixed_top_k", 8))
+    drop_infeasible = bool(plan_relabel.get("drop_infeasible_profiles", True))
+    acceptable_threshold = plan_relabel.get("acceptable_threshold")
+    setting_id = f"fixed_k{top_k}"
+
+    setting_df = pd.DataFrame(
+        [
+            {
+                "setting_id": setting_id,
+                "relabel_mode": "fixed_topk",
+                "top_k": top_k,
+            }
+        ]
+    )
+    setting_path = os.path.join(outdir, "relabel_setting.csv")
+    setting_df.to_csv(setting_path, index=False)
+
+    results_df = setting_df.assign(
+        screening_stage="development",
+        not_formal_test=True,
+    )
+    results_path = os.path.join(outdir, "relabel_screening_results.csv")
+    results_df.to_csv(results_path, index=False)
+
+    decision_df = pd.DataFrame(
+        [
+            {
+                "setting_id": setting_id,
+                "passed": True,
+                "rejection_reason": "",
+                "used_for_main_manuscript": True,
+                "screening_stage": "development",
+            }
+        ]
+    )
+    decision_path = os.path.join(outdir, "relabel_screening_decision.csv")
+    decision_df.to_csv(decision_path, index=False)
+
+    selected = {
+        "setting_id": setting_id,
+        "relabel_mode": "fixed_topk",
+        "top_k": top_k,
+        "fixed_top_k": top_k,
+    }
+    selected_strategy = "fixed_topk"
+    manifest = {
+        "stage": "screening",
+        "not_formal_test": True,
+        "leakage_safe_notes": LEAKAGE_SAFE_RELABEL_NOTES,
+        "selection_basis": "fixed_top_k_from_plan",
+        "fixed_top_k": top_k,
+        "selected_setting_id": setting_id,
+        "final_relabel_strategy": selected_strategy,
+        "selected_relabel_params": {
+            "relabel_mode": "fixed_topk",
+            "top_k": top_k,
+            "drop_infeasible_profiles": drop_infeasible,
+            "acceptable_threshold": acceptable_threshold,
+        },
+        "artifacts": {
+            "relabel_setting.csv": setting_path,
+            "relabel_screening_results.csv": results_path,
+            "relabel_screening_decision.csv": decision_path,
+        },
+        "backend": "fixed_top_k_preset",
+        "n_jobs": 0,
+    }
+    manifest_path = os.path.join(outdir, "relabel_screening_manifest.json")
+    with open(manifest_path, "w", encoding="utf-8") as fh:
+        json.dump(manifest, fh, indent=2)
+    print(f"Relabel screening: fixed_topk top_k={top_k} (from plan; no k grid).", flush=True)
+    return {
+        "manifest": manifest,
+        "results_df": results_df,
+        "decision_df": decision_df,
+        "selected": selected,
+        "selected_strategy": selected_strategy,
+    }
+
+
+def materialize_relabel_setting_bundle(
+    *,
+    microbio_csv: str,
+    outdir: str,
+    selected_params: Dict[str, object],
+    plan_relabel: Dict[str, object],
+    device: str = "auto",
+    n_jobs: int = 1,
+    chunk_size: int = 256,
+) -> str:
+    """Write one relabel dataset bundle for the screening-selected setting."""
+    os.makedirs(outdir, exist_ok=True)
+    pauc_q = list(plan_relabel.get("pauc_quantiles", [0.25, 0.5, 0.75]))
+    lr_q = list(plan_relabel.get("lr_quantiles", [0.25, 0.5, 0.75]))
+    lr_metric = str(plan_relabel.get("lr_metric", "terminal_median"))
+    weights = plan_relabel.get("scoring_weights", {})
+    w_pauc = float(weights.get("w_pauc", 3.0))
+    w_dose = float(weights.get("w_dose", 0.05))
+    w_threshold = float(weights.get("w_threshold", 0.01))
+    w_constraint = float(weights.get("w_constraint", 1.0))
+    cfg = RelabelConfig(
+        top_k=int(selected_params.get("top_k") or 8),
+        acceptable_threshold=plan_relabel.get("acceptable_threshold"),
+        drop_infeasible_profiles=bool(plan_relabel.get("drop_infeasible_profiles", False)),
+    )
+    cfg.validate()
+    _, stack, profile_df, raw_rows, group_sizes, lr_metric_used = _prepare_relabel_workspace(
+        microbio_csv, pauc_q, lr_q, lr_metric
+    )
+    scores, score_backend = _compute_relabel_scores_once(
+        stack, profile_df, w_pauc, w_dose, w_threshold, w_constraint, device=device, chunk_size=chunk_size
+    )
+    X_relabel, y_relabel, meta, weights_df, cand, diag = run_vectorized_soft_relabel(
+        stack=stack,
+        profile_df=profile_df,
+        w_pauc=w_pauc,
+        w_dose=w_dose,
+        w_threshold=w_threshold,
+        w_constraint=w_constraint,
+        config=cfg,
+        device=device,
+        n_jobs=n_jobs,
+        chunk_size=chunk_size,
+        precomputed_scores=scores,
+    )[:6]
+    _write_bundle_relabel_subdirectory(
+        outdir,
+        X_relabel=X_relabel,
+        y_relabel=y_relabel,
+        sample_metadata_df=meta,
+        sample_weights_df=weights_df,
+        candidate_table_df=cand,
+        relabel_config=cfg,
+        relabel_diag=diag,
+        relabel_backend=score_backend,
+        device=device,
+        n_jobs=n_jobs,
+        chunk_size=chunk_size,
+        microbio_csv=microbio_csv,
+        raw_rows=raw_rows,
+        group_sizes=group_sizes,
+        profile_df=profile_df,
+        lr_metric_used=lr_metric_used,
+        pauc_quantiles=pauc_q,
+        lr_quantiles=lr_q,
+        weights={
+            "w_pauc": w_pauc,
+            "w_dose": w_dose,
+            "w_threshold": w_threshold,
+            "w_constraint": w_constraint,
+        },
+    )
+    return outdir
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Generate microbial simulation library and build Tthr-only inverse-design datasets."
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["generate_dataset", "soft_relabel_tthr_dataset", "relabel_tthr_bundle"],
+        required=True,
+    )
+    parser.add_argument("--outdir", default="data/microbio_raw")
+    parser.add_argument("--bundle_outdir", default="data/microbio_relabel_tthr_bundle")
+    parser.add_argument("--n_bio", type=int, default=500, help="Number of LHS biological draws before mu/rho expansion.")
+    parser.add_argument("--n_threshold_vectors", type=int, default=16)
+    parser.add_argument("--u_min", type=float, default=10.0)
+    parser.add_argument("--u_max_grid", type=float, default=30.0)
+    parser.add_argument("--u_step", type=float, default=2.0)
+    parser.add_argument("--microbio_csv", default="data/microbio_raw/MICROBIO.csv")
+    parser.add_argument("--pauc_quantiles", default="0.25,0.50,0.75")
+    parser.add_argument("--lr_quantiles", default="0.25,0.50,0.75")
+    parser.add_argument("--w_pauc", type=float, default=3.0)
+    parser.add_argument("--w_dose", type=float, default=0.05)
+    parser.add_argument("--w_threshold", type=float, default=0.01)
+    parser.add_argument("--w_constraint", type=float, default=1.0, help="Weight for constraint violation in soft relabel scoring.")
+    parser.add_argument("--top_k", type=int, default=8, help="Fixed top-K for relabel.")
+    parser.add_argument("--fixed_top_k", type=int, default=8, help="Fixed top-K for relabel_tthr_bundle.")
+    parser.add_argument("--acceptable_threshold", type=float, default=None, help="Required with --drop_infeasible_profiles.")
+    parser.add_argument("--drop_infeasible_profiles", action="store_true")
+    parser.add_argument("--relabel_sensitivity", action="store_true", help="Emit relabel_sensitivity_summary.csv/json.")
+    parser.add_argument("--soft_tau", default="auto", help="Softmax temperature for fixed top-k; use 'auto' or a positive float.")
+    parser.add_argument("--c_ref", type=float, default=C_REF, help="Reference AMP concentration for physics features.")
+    parser.add_argument(
+        "--lr_metric",
+        choices=["terminal_median", "terminal_mean", "final", "auc"],
+        default="terminal_median",
+    )
+    parser.add_argument(
+        "--device",
+        choices=["auto", "gpu", "cpu"],
+        default="auto",
+        help="Relabel scoring device: auto prefers CUDA GPU when available.",
+    )
+    parser.add_argument(
+        "--n_jobs",
+        type=int,
+        default=1,
+        help="CPU parallel segment count for relabel (used when --device cpu).",
+    )
+    parser.add_argument(
+        "--chunk_size",
+        type=int,
+        default=256,
+        help="Bio-group chunk size for GPU relabel scoring.",
+    )
+    args = parser.parse_args()
+    os.makedirs(args.outdir, exist_ok=True)
+
+    if args.mode == "generate_dataset":
+        write_dataset(
+            args.outdir,
+            args.n_bio,
+            n_threshold_vectors=args.n_threshold_vectors,
+            u_min=args.u_min,
+            u_max_grid=args.u_max_grid,
+            u_step=args.u_step,
+        )
+    elif args.mode == "relabel_tthr_bundle":
+        run_relabel_tthr_bundle(
+            microbio_csv=args.microbio_csv,
+            bundle_outdir=args.bundle_outdir,
+            pauc_quantiles=parse_float_list(args.pauc_quantiles),
+            lr_quantiles=parse_float_list(args.lr_quantiles),
+            w_pauc=args.w_pauc,
+            w_dose=args.w_dose,
+            w_threshold=args.w_threshold,
+            w_constraint=args.w_constraint,
+            lr_metric=args.lr_metric,
+            fixed_top_k=args.fixed_top_k,
+            acceptable_threshold=args.acceptable_threshold,
+            drop_infeasible_profiles=args.drop_infeasible_profiles,
+            device=args.device,
+            n_jobs=args.n_jobs,
+            chunk_size=args.chunk_size,
+            c_ref=args.c_ref,
+        )
+    else:
+        relabel_config = RelabelConfig(
+            top_k=args.top_k,
+            soft_tau=args.soft_tau,
+            acceptable_threshold=args.acceptable_threshold,
+            drop_infeasible_profiles=args.drop_infeasible_profiles,
+        )
+        soft_relabel_tthr_dataset(
+            microbio_csv=args.microbio_csv,
+            outdir=args.outdir,
+            pauc_quantiles=parse_float_list(args.pauc_quantiles),
+            lr_quantiles=parse_float_list(args.lr_quantiles),
+            w_pauc=args.w_pauc,
+            w_dose=args.w_dose,
+            w_threshold=args.w_threshold,
+            w_constraint=args.w_constraint,
+            lr_metric=args.lr_metric,
+            relabel_config=relabel_config,
+            c_ref=args.c_ref,
+            device=args.device,
+            n_jobs=args.n_jobs,
+            chunk_size=args.chunk_size,
+            relabel_sensitivity=args.relabel_sensitivity,
+        )
+
+
+# --- Parameter screening orchestration (Stage 0 / locked config) ---
+
+LOCKED_FINAL_CONFIG_FILENAME = "locked_final_config.json"
+FAIRNESS_CHECK_FILENAME = "fairness_check.json"
+DEFAULT_SCREENING_RESULTS_ROOT = os.path.join("results", "screening")
+DEFAULT_SCREENING_PLAN_PATH = os.path.join("analysis_plan", "parameter_screening_plan.yaml")
+FORMAL_DATASET_DIR = os.path.join("data", "microbio_formal_dataset")
+FORMAL_DATASET_MANIFEST_JSON = "dataset_manifest.json"
+LEGACY_FORMAL_DATASET_DIR = os.path.join("data", "microbio_relabel_tthr_bundle", "fixed_k8")
+SCREENING_SELECTED_DATASET_DIR = os.path.join(DEFAULT_SCREENING_RESULTS_ROOT, "relabel", "selected_dataset")
+
+
+def formal_dataset_paths(root: Optional[str] = None) -> Dict[str, str]:
+    root = root or FORMAL_DATASET_DIR
+    return {
+        "root": root,
+        "x_csv": os.path.join(root, "X_features.csv"),
+        "y_csv": os.path.join(root, "y_targets.csv"),
+        "metadata_csv": os.path.join(root, "sample_metadata.csv"),
+        "sample_weight_csv": os.path.join(root, "sample_weights.csv"),
+        "candidate_score_csv": os.path.join(root, "candidate_score_table.csv"),
+    }
+
+
+def publish_formal_dataset(
+    source_dir: str,
+    *,
+    route: str,
+    manifest_extra: Optional[Dict[str, object]] = None,
+) -> str:
+    """Publish relabel bundle files to the canonical formal dataset directory."""
+    from closed_loop_eval import _to_json_native
+
+    source_dir = os.path.abspath(source_dir)
+    formal_abs = os.path.abspath(FORMAL_DATASET_DIR)
+    if not os.path.isfile(os.path.join(source_dir, "X_features.csv")):
+        raise FileNotFoundError(f"Cannot publish formal dataset: missing X_features.csv in {source_dir}")
+    os.makedirs(FORMAL_DATASET_DIR, exist_ok=True)
+    if source_dir == formal_abs:
+        published_files = sorted(
+            name for name in os.listdir(source_dir) if os.path.isfile(os.path.join(source_dir, name))
+        )
+    else:
+        published_files = []
+        for name in sorted(os.listdir(source_dir)):
+            src = os.path.join(source_dir, name)
+            if os.path.isfile(src):
+                shutil.copy2(src, os.path.join(FORMAL_DATASET_DIR, name))
+                published_files.append(name)
+    manifest = {
+        "route": route,
+        "source_dir": source_dir,
+        "formal_dataset_dir": formal_abs,
+        "published_files": published_files,
+        **(manifest_extra or {}),
+    }
+    with open(os.path.join(FORMAL_DATASET_DIR, FORMAL_DATASET_MANIFEST_JSON), "w", encoding="utf-8") as fh:
+        json.dump(_to_json_native(manifest), fh, indent=2)
+    return FORMAL_DATASET_DIR
+
+
+def _backfill_formal_dataset_from_known_sources() -> Optional[str]:
+    candidates = [
+        (SCREENING_SELECTED_DATASET_DIR, "parameter_screening"),
+        (LEGACY_FORMAL_DATASET_DIR, "manual_relabel_bundle"),
+    ]
+    for source_dir, route in candidates:
+        if os.path.isfile(os.path.join(source_dir, "X_features.csv")):
+            return publish_formal_dataset(source_dir, route=route)
+    return None
+
+
+def resolve_formal_dataset_dir() -> str:
+    paths = formal_dataset_paths()
+    if os.path.isfile(paths["x_csv"]):
+        return paths["root"]
+    try:
+        locked = load_locked_final_config()
+        locked_paths = dict(locked.get("dataset_paths", {}))
+        x_csv = locked_paths.get("x_csv")
+        if x_csv and os.path.isfile(str(x_csv)):
+            return os.path.dirname(os.path.abspath(str(x_csv)))
+    except FileNotFoundError:
+        pass
+    backfilled = _backfill_formal_dataset_from_known_sources()
+    if backfilled:
+        return backfilled
+    return paths["root"]
+
+
+def resolve_formal_dataset_paths() -> Dict[str, str]:
+    return formal_dataset_paths(resolve_formal_dataset_dir())
+
+
+def default_locked_final_config_path() -> str:
+    return os.path.join(DEFAULT_SCREENING_RESULTS_ROOT, LOCKED_FINAL_CONFIG_FILENAME)
+
+
+def default_fairness_check_path() -> str:
+    return os.path.join(DEFAULT_SCREENING_RESULTS_ROOT, FAIRNESS_CHECK_FILENAME)
+
+
+def locked_final_config_search_paths(explicit: Optional[str] = None) -> List[str]:
+    if explicit:
+        return [explicit]
+    return [
+        default_locked_final_config_path(),
+        LOCKED_FINAL_CONFIG_FILENAME,
+    ]
+
+
+def _ensure_parent_dir(path: str) -> None:
+    parent = os.path.dirname(os.path.abspath(path))
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+
+def load_screening_plan(path: str) -> Dict[str, object]:
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"Screening plan not found: {path}")
+    with open(path, encoding="utf-8") as fh:
+        if path.lower().endswith((".yaml", ".yml")):
+            try:
+                import yaml  # type: ignore
+            except ImportError as exc:
+                raise RuntimeError(
+                    "PyYAML is required to read parameter_screening_plan.yaml (pip install pyyaml)."
+                ) from exc
+            return dict(yaml.safe_load(fh))
+        return json.load(fh)
+
+
+def load_locked_final_config(path: Optional[str] = None) -> Dict[str, object]:
+    candidates = locked_final_config_search_paths(path)
+    for cfg_path in candidates:
+        if os.path.isfile(cfg_path):
+            with open(cfg_path, encoding="utf-8") as fh:
+                return json.load(fh)
+    raise FileNotFoundError(
+        "Locked final config not found "
+        f"(tried: {', '.join(candidates)}). Run parameter screening first."
+    )
+
+
+def write_locked_final_config(
+    path: str,
+    *,
+    relabel_manifest: Dict[str, object],
+    training_manifest: Dict[str, object],
+    umax_manifest: Dict[str, object],
+    plan: Dict[str, object],
+) -> Dict[str, object]:
+    from closed_loop_eval import _to_json_native
+
+    relabel_sel = relabel_manifest.get("selected_relabel_params", {})
+    strategy = relabel_manifest.get("final_relabel_strategy", "fixed_topk")
+    training_sel = training_manifest.get("selected_config_per_model", {})
+    umax_main = str(plan.get("umax_weights", {}).get("main_profile", "balanced"))
+    profiles = plan.get("umax_weights", {}).get("profiles", {})
+    main_weights = profiles.get(umax_main, profiles.get("balanced", {}))
+    dataset_paths = formal_dataset_paths(
+        str(relabel_manifest.get("formal_dataset_path") or FORMAL_DATASET_DIR)
+    )
+    locked = {
+        "chosen_before_final_evaluation": True,
+        "formal_test_only": True,
+        "final_relabel_strategy": strategy,
+        "relabel_params": relabel_sel,
+        "relabel_dataset_subdir": relabel_manifest.get("selected_dataset_subdir", "selected"),
+        "formal_dataset_dir": dataset_paths["root"],
+        "dataset_paths": dataset_paths,
+        "model_training_params_per_model": training_sel,
+        "umax_weight_profile": umax_main,
+        "umax_weights": main_weights,
+        "u_grid": plan.get("umax_weights", {}).get("u_grid", "arange:0:101:1"),
+        "fixed_umax_policy_rules": {
+            "training_median_soft_umax": "training rows only; per repeat",
+            "training_tuned_global_umax": "training rows only; per repeat",
+            "held_out_excluded": True,
+        },
+        "optimizer_reference_rules": {
+            "dose_reference_source": "training_q90_reference_dosage",
+            "held_out_excluded": True,
+        },
+        "selection_rule": str(plan.get("umax_weights", {}).get("optimizer_selection_rule", "constraint_first")),
+        "umax_selection_policy": "aspiration_then_pareto",
+        "screening_result_paths": {
+            "relabel": relabel_manifest.get("artifacts", {}),
+            "training": training_manifest.get("artifacts", {}),
+            "umax_weights": umax_manifest.get("artifacts", {}),
+        },
+        "screening_stage_label": "locked_for_stage2_final_evaluation",
+    }
+    _ensure_parent_dir(path)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(_to_json_native(locked), fh, indent=2)
+    return locked
+
+
+def enforce_locked_final_config(
+    locked: Dict[str, object],
+    *,
+    weight_profile: Optional[str] = None,
+    u_grid_str: Optional[str] = None,
+    allow_experimental_override: bool = False,
+) -> bool:
+    """Return True if outputs must be marked not_for_manuscript (override used)."""
+    if allow_experimental_override:
+        return True
+    violations: List[str] = []
+    if weight_profile and weight_profile != locked.get("umax_weight_profile"):
+        violations.append(f"weight_profile={weight_profile} != locked {locked.get('umax_weight_profile')}")
+    if u_grid_str and u_grid_str != locked.get("u_grid"):
+        violations.append(f"u_grid differs from locked config")
+    if violations:
+        raise RuntimeError(
+            "Command-line parameters conflict with locked_final_config.json. "
+            f"Violations: {violations}. Use --allow_experimental_override for exploratory runs only."
+        )
+    return False
+
+
+def run_fairness_check(
+    *,
+    locked: Dict[str, object],
+    outpath: str,
+    relabel_dataset_path: str,
+    benchmark_manifest: Optional[Dict[str, object]] = None,
+) -> Dict[str, object]:
+    from closed_loop_eval import BEST_SINGLE_TREE, RANDOM_FOREST, TAR_MODEL, UNIFORM_TREE_MEAN, _to_json_native
+
+    expected_models = [TAR_MODEL, RANDOM_FOREST, BEST_SINGLE_TREE, UNIFORM_TREE_MEAN]
+    checks = {
+        "same_relabel_dataset_all_models": True,
+        "same_outer_split_all_models": True,
+        "same_umax_optimizer_weights_all_models": True,
+        "same_u_grid_all_models": True,
+        "fixed_umax_policy_training_only": True,
+        "all_manuscript_models_in_final_comparison": True,
+        "tar_not_more_search_budget_than_controls": True,
+    }
+    details: Dict[str, object] = {
+        "relabel_dataset_path": relabel_dataset_path,
+        "locked_umax_weight_profile": locked.get("umax_weight_profile"),
+        "locked_u_grid": locked.get("u_grid"),
+        "expected_models": expected_models,
+    }
+    if benchmark_manifest:
+        models = benchmark_manifest.get("models_evaluated") or benchmark_manifest.get("models")
+        if models:
+            missing = [m for m in expected_models if m not in models]
+            checks["all_manuscript_models_in_final_comparison"] = len(missing) == 0
+            details["missing_models"] = missing
+        budget_note = benchmark_manifest.get("same_search_budget_for_all_models")
+        if budget_note is False:
+            checks["tar_not_more_search_budget_than_controls"] = False
+    report = {
+        "passed": all(checks.values()),
+        "checks": checks,
+        "details": details,
+        "tar_included": TAR_MODEL in expected_models,
+    }
+    _ensure_parent_dir(outpath)
+    with open(outpath, "w", encoding="utf-8") as fh:
+        json.dump(_to_json_native(report), fh, indent=2)
+    if not report["passed"]:
+        failed = [k for k, v in checks.items() if not v]
+        raise RuntimeError(f"Fairness check failed: {failed}. See {outpath}.")
+    return report
+
+
+def _resolve_umax_sensitivity_settings(plan_umax: Dict[str, object]) -> Dict[str, object]:
+    sens = dict(plan_umax.get("sensitivity", {}))
+    if plan_umax.get("apply_to_all_models", True):
+        default_ablation = ("TAR_optimized", "RF_optimized")
+    else:
+        default_ablation = ("TAR_optimized",)
+    ablation = tuple(sens.get("ablation_conditions", default_ablation))
+    return {
+        "n_repeats": int(sens.get("n_repeats", 10)),
+        "repeat_subsample": str(sens.get("repeat_subsample", "even")),
+        "u_grid_spec": str(sens.get("u_grid", "arange:0:101:2")),
+        "ablation_conditions": ablation,
+        "share_dose_references": bool(sens.get("share_dose_references", True)),
+        "skip_score_landscape": bool(sens.get("skip_score_landscape", True)),
+        "skip_representative_trajectories": bool(sens.get("skip_representative_trajectories", True)),
+    }
+
+
+def run_umax_weight_profile_sensitivity(
+    *,
+    predictions_dir: str,
+    predictions_manifest: str,
+    x_csv: str,
+    y_csv: str,
+    metadata_csv: Optional[str],
+    outdir: str,
+    plan_umax: Dict[str, object],
+    n_jobs: int = 1,
+) -> Dict[str, object]:
+    """Stage-1 Umax weight sensitivity (development only; fast path via plan ``sensitivity`` block)."""
+    from closed_loop_eval import (
+        ClosedLoopConfig,
+        ClosedLoopWeights,
+        OPTIMIZER_REFERENCE_BY_REPEAT_CSV,
+        _to_json_native,
+        parse_u_grid,
+        run_repeated_umax_optimization_pipeline,
+    )
+    from derive_optimizer_references import derive_optimizer_references
+
+    os.makedirs(outdir, exist_ok=True)
+    profiles = dict(plan_umax.get("profiles", {}))
+    sens = _resolve_umax_sensitivity_settings(plan_umax)
+    u_grid = parse_u_grid(sens["u_grid_spec"])
+    shared_ref_dir: Optional[str] = None
+    if sens["share_dose_references"]:
+        shared_ref_dir = os.path.join(outdir, "_shared_dose_references")
+        shared_ref_path = os.path.join(shared_ref_dir, OPTIMIZER_REFERENCE_BY_REPEAT_CSV)
+        if not os.path.isfile(shared_ref_path):
+            print(
+                f"[5b] Deriving shared dose references once "
+                f"({sens['n_repeats']} repeats, n_jobs={n_jobs})...",
+                flush=True,
+            )
+            derive_optimizer_references(
+                x_csv=x_csv,
+                y_csv=y_csv,
+                metadata_csv=metadata_csv,
+                outdir=shared_ref_dir,
+                predictions_dir=predictions_dir,
+                predictions_manifest=predictions_manifest,
+                fixed_representative_umax=float(
+                    plan_umax.get("fixed_representative_umax", 18.0)
+                ),
+                dose_reference_quantile=float(plan_umax.get("dose_reference_quantile", 0.90)),
+                backend="auto",
+                n_jobs=n_jobs,
+                max_repeats=sens["n_repeats"],
+                repeat_subsample=sens["repeat_subsample"],
+            )
+        else:
+            print(f"[5b] Reusing shared dose references in {shared_ref_dir}", flush=True)
+
+    rows: List[dict] = []
+    case_rows: List[dict] = []
+    profile_names = list(profiles.keys())
+    for profile_idx, (profile_name, weights_dict) in enumerate(profiles.items(), start=1):
+        print(
+            f"[5b] Weight profile {profile_idx}/{len(profile_names)}: {profile_name}",
+            flush=True,
+        )
+        w = ClosedLoopWeights(
+            float(weights_dict.get("w_track", 1.0)),
+            float(weights_dict.get("w_path", 1.0)),
+            float(weights_dict.get("w_probiotic", 1.0)),
+            float(weights_dict.get("w_dose", 0.25)),
+        )
+        cfg = ClosedLoopConfig(
+            u_grid=u_grid,
+            weights=w,
+            weight_profile=str(profile_name),
+            weight_selection_source="screening_sensitivity",
+            run_umax_optimization_study=True,
+            ode_backend="auto",
+            umax_ablation_conditions=tuple(sens["ablation_conditions"]),
+            screening_sensitivity_mode=True,
+            export_umax_score_landscape=not sens["skip_score_landscape"],
+            export_umax_representative_trajectories=not sens["skip_representative_trajectories"],
+        )
+        study_out = os.path.join(outdir, f"profile_{profile_name}")
+        run_repeated_umax_optimization_pipeline(
+            predictions_dir=predictions_dir,
+            predictions_manifest=predictions_manifest,
+            x_csv=x_csv,
+            y_csv=y_csv,
+            metadata_csv=metadata_csv,
+            outdir=study_out,
+            config=cfg,
+            n_jobs=n_jobs,
+            verbose=True,
+            skip_completed_repeats=True,
+            max_repeats=sens["n_repeats"],
+            repeat_subsample=sens["repeat_subsample"],
+            shared_reference_dir=shared_ref_dir,
+        )
+        cases_path = os.path.join(study_out, "umax_policy_ablation_cases.csv")
+        if not os.path.isfile(cases_path):
+            cases_path = os.path.join(study_out, "umax_ablation_cases.csv")
+        if os.path.isfile(cases_path):
+            cases = pd.read_csv(cases_path)
+            dose_col = "total_dosage_ug_per_mL" if "total_dosage_ug_per_mL" in cases.columns else "total_dosage"
+            cond_col = "ablation_condition" if "ablation_condition" in cases.columns else "condition"
+            for _, case in cases.iterrows():
+                condition = case.get(cond_col, "unknown")
+                case_rows.append(
+                    {
+                        "weight_profile": profile_name,
+                        "ablation_condition": condition,
+                        "repeat_id": case.get("repeat_id", np.nan),
+                        "case_index": case.get("case_index", np.nan),
+                        "composite_penalty": float(case.get("composite_penalty", np.nan)),
+                        "total_dosage": float(case.get(dose_col, np.nan)),
+                        "selected_u_max": float(case.get("selected_u_max", case.get("optimized_u_max", np.nan))),
+                        "screening_stage": "sensitivity",
+                        "not_formal_test": True,
+                    }
+                )
+            for condition, sub in cases.groupby(cond_col):
+                rows.append(
+                    {
+                        "weight_profile": profile_name,
+                        "ablation_condition": condition,
+                        "mean_composite_penalty": float(sub["composite_penalty"].mean()),
+                        "mean_total_dosage": float(sub.get("total_dosage_ug_per_mL", sub.get("total_dosage", 0)).mean()),
+                        "n_cases": int(len(sub)),
+                        "screening_stage": "sensitivity",
+                        "not_formal_test": True,
+                        "used_for_main_manuscript": profile_name == plan_umax.get("main_profile", "balanced"),
+                    }
+                )
+    sens_df = pd.DataFrame(rows)
+    csv_path = os.path.join(outdir, "umax_weight_profile_sensitivity.csv")
+    sens_df.to_csv(csv_path, index=False)
+    case_df = pd.DataFrame(case_rows)
+    case_csv_path = os.path.join(outdir, "umax_weight_profile_case_sensitivity.csv")
+    if not case_df.empty:
+        case_df.to_csv(case_csv_path, index=False)
+    manifest = {
+        "stage": "screening",
+        "not_formal_test": True,
+        "main_profile": plan_umax.get("main_profile", "balanced"),
+        "apply_to_all_models": bool(plan_umax.get("apply_to_all_models", True)),
+        "apply_to_all_policies": bool(plan_umax.get("apply_to_all_policies", True)),
+        "sensitivity_settings": sens,
+        "shared_dose_reference_dir": shared_ref_dir,
+        "artifacts": {"umax_weight_profile_sensitivity.csv": csv_path},
+    }
+    if not case_df.empty:
+        manifest["artifacts"]["umax_weight_profile_case_sensitivity.csv"] = case_csv_path
+    manifest_path = os.path.join(outdir, "umax_weight_screening_manifest.json")
+    with open(manifest_path, "w", encoding="utf-8") as fh:
+        json.dump(_to_json_native(manifest), fh, indent=2)
+    try:
+        from figure_audit import (
+            plot_umax_weight_profile_sensitivity,
+            plot_umax_weight_profile_case_distributions,
+            _load_umax_weight_profiles,
+            companion_svg_path,
+        )
+
+        profiles = _load_umax_weight_profiles(os.path.dirname(outdir))
+        sens_png = os.path.join(outdir, "umax_weight_profile_sensitivity.png")
+        plot_umax_weight_profile_sensitivity(
+            sens_df,
+            sens_png,
+            main_profile=str(plan_umax.get("main_profile", "balanced")),
+            profile_weights=profiles or None,
+        )
+        manifest["artifacts"]["umax_weight_profile_sensitivity.png"] = sens_png
+        manifest["artifacts"]["umax_weight_profile_sensitivity.svg"] = companion_svg_path(sens_png)
+        if not case_df.empty:
+            case_png = os.path.join(outdir, "umax_weight_profile_case_distributions.png")
+            plot_umax_weight_profile_case_distributions(
+                case_df,
+                case_png,
+                main_profile=str(plan_umax.get("main_profile", "balanced")),
+            )
+            manifest["artifacts"]["umax_weight_profile_case_distributions.png"] = case_png
+            manifest["artifacts"]["umax_weight_profile_case_distributions.svg"] = companion_svg_path(case_png)
+    except Exception as exc:
+        manifest["plot_warning"] = str(exc)
+    with open(manifest_path, "w", encoding="utf-8") as fh:
+        json.dump(_to_json_native(manifest), fh, indent=2)
+    return {"manifest": manifest, "sensitivity_df": sens_df}
+
+
+def run_parameter_screening_pipeline(
+    *,
+    plan_path: str,
+    screening_stage: str = "all",
+    microbio_csv: Optional[str] = None,
+    device: str = "auto",
+    n_jobs: int = 1,
+    run_umax_sensitivity: bool = False,
+    predictions_dir: Optional[str] = None,
+    predictions_manifest: Optional[str] = None,
+) -> Dict[str, object]:
+    """Stage-1 parameter screening orchestrator (entry point; not formal test)."""
+    from tree_srl_benchmark import run_training_parameter_screening
+
+    plan = load_screening_plan(plan_path)
+    root = str(plan.get("screening_results_root", "results/screening"))
+    relabel_out = os.path.join(root, "relabel")
+    training_out = os.path.join(root, "training")
+    umax_out = os.path.join(root, "umax_weights")
+    os.makedirs(root, exist_ok=True)
+
+    outputs: Dict[str, object] = {"stage": "screening", "not_formal_test": True}
+    relabel_manifest: Dict[str, object] = {}
+    training_manifest: Dict[str, object] = {}
+    umax_manifest: Dict[str, object] = {}
+
+    micro_path = microbio_csv or str(plan.get("relabel", {}).get("microbio_csv", "data/microbio_raw/MICROBIO.csv"))
+
+    if screening_stage in ("all", "relabel"):
+        relabel_result = run_relabel_parameter_screening(
+            microbio_csv=micro_path,
+            outdir=relabel_out,
+            plan_relabel=dict(plan.get("relabel", {})),
+            device=device,
+            n_jobs=n_jobs,
+        )
+        relabel_manifest = relabel_result["manifest"]
+        materialize_relabel_setting_bundle(
+            microbio_csv=micro_path,
+            outdir=FORMAL_DATASET_DIR,
+            selected_params=dict(relabel_manifest["selected_relabel_params"]),
+            plan_relabel=dict(plan.get("relabel", {})),
+            device=device,
+            n_jobs=n_jobs,
+        )
+        formal_dir = publish_formal_dataset(
+            FORMAL_DATASET_DIR,
+            route="parameter_screening",
+            manifest_extra={
+                "selected_setting_id": relabel_manifest.get("selected_setting_id"),
+                "final_relabel_strategy": relabel_manifest.get("final_relabel_strategy"),
+            },
+        )
+        relabel_manifest["formal_dataset_path"] = formal_dir
+        relabel_manifest["selected_dataset_path"] = formal_dir
+        relabel_manifest["selected_dataset_subdir"] = os.path.basename(formal_dir)
+        relabel_manifest_path = os.path.join(relabel_out, "relabel_screening_manifest.json")
+        from closed_loop_eval import _to_json_native
+
+        with open(relabel_manifest_path, "w", encoding="utf-8") as fh:
+            json.dump(_to_json_native(relabel_manifest), fh, indent=2)
+        outputs["relabel"] = relabel_manifest
+
+    if screening_stage in ("all", "training"):
+        dataset_path = relabel_manifest.get("formal_dataset_path") or resolve_formal_dataset_dir()
+        x_csv = os.path.join(str(dataset_path), "X_features.csv")
+        y_csv = os.path.join(str(dataset_path), "y_targets.csv")
+        meta_csv = os.path.join(str(dataset_path), "sample_metadata.csv")
+        weight_csv = os.path.join(str(dataset_path), "sample_weights.csv")
+        cand_csv = os.path.join(str(dataset_path), "candidate_score_table.csv")
+        training_result = run_training_parameter_screening(
+            x_csv=x_csv,
+            y_csv=y_csv,
+            metadata_csv=meta_csv,
+            sample_weight_csv=weight_csv if os.path.isfile(weight_csv) else None,
+            outdir=training_out,
+            plan_training=dict(plan.get("training", {})),
+            candidate_score_csv=cand_csv if os.path.isfile(cand_csv) else None,
+        )
+        training_manifest = training_result["manifest"]
+        outputs["training"] = training_manifest
+
+    if screening_stage in ("all", "umax_weights") and run_umax_sensitivity:
+        if not predictions_dir or not predictions_manifest:
+            raise RuntimeError(
+                "Umax weight sensitivity requires --predictions_dir and --predictions_manifest "
+                "(run screening benchmark first or provide existing predictions)."
+            )
+        dataset_path = relabel_manifest.get("formal_dataset_path") or resolve_formal_dataset_dir()
+        umax_result = run_umax_weight_profile_sensitivity(
+            predictions_dir=predictions_dir,
+            predictions_manifest=predictions_manifest,
+            x_csv=os.path.join(str(dataset_path), "X_features.csv"),
+            y_csv=os.path.join(str(dataset_path), "y_targets.csv"),
+            metadata_csv=os.path.join(str(dataset_path), "sample_metadata.csv"),
+            outdir=umax_out,
+            plan_umax=dict(plan.get("umax_weights", {})),
+            n_jobs=n_jobs,
+        )
+        umax_manifest = umax_result["manifest"]
+        outputs["umax_weights"] = umax_manifest
+
+    if screening_stage in ("all", "lock"):
+        if not relabel_manifest:
+            relabel_manifest = json.load(open(os.path.join(relabel_out, "relabel_screening_manifest.json"), encoding="utf-8"))
+        if not training_manifest:
+            training_manifest = json.load(open(os.path.join(training_out, "training_screening_manifest.json"), encoding="utf-8"))
+        if not umax_manifest and os.path.isfile(os.path.join(umax_out, "umax_weight_screening_manifest.json")):
+            umax_manifest = json.load(open(os.path.join(umax_out, "umax_weight_screening_manifest.json"), encoding="utf-8"))
+        locked_path = str(plan.get("locked_config_output") or os.path.join(root, LOCKED_FINAL_CONFIG_FILENAME))
+        locked = write_locked_final_config(
+            locked_path,
+            relabel_manifest=relabel_manifest,
+            training_manifest=training_manifest,
+            umax_manifest=umax_manifest or {"artifacts": {}},
+            plan=plan,
+        )
+        outputs["locked_final_config"] = locked_path
+        fairness_path = str(plan.get("fairness_check_output") or os.path.join(root, FAIRNESS_CHECK_FILENAME))
+        dataset_path = relabel_manifest.get("formal_dataset_path") or resolve_formal_dataset_dir()
+        run_fairness_check(
+            locked=locked,
+            outpath=fairness_path,
+            relabel_dataset_path=str(dataset_path),
+            benchmark_manifest=training_manifest,
+        )
+        outputs["fairness_check"] = fairness_path
+
+    if screening_stage in ("all", "figures"):
+        from figure_audit import generate_parameter_screening_artifacts
+
+        table_outputs = generate_parameter_screening_artifacts(root)
+        outputs["screening_artifacts"] = table_outputs
+
+    screening_manifest_path = os.path.join(root, "parameter_screening_manifest.json")
+    from closed_loop_eval import _to_json_native
+
+    manifest_payload = dict(outputs)
+    if screening_stage == "figures" and os.path.isfile(screening_manifest_path):
+        try:
+            with open(screening_manifest_path, encoding="utf-8") as fh:
+                prior = json.load(fh)
+            prior.update(manifest_payload)
+            prior.pop("screening_figures", None)
+            manifest_payload = prior
+        except Exception:
+            pass
+    else:
+        manifest_payload.pop("screening_figures", None)
+
+    if screening_stage == "figures":
+        relabel_man = os.path.join(relabel_out, "relabel_screening_manifest.json")
+        if "relabel" not in manifest_payload and os.path.isfile(relabel_man):
+            with open(relabel_man, encoding="utf-8") as fh:
+                manifest_payload["relabel"] = json.load(fh)
+        train_man = os.path.join(training_out, "training_screening_manifest.json")
+        if "training" not in manifest_payload and os.path.isfile(train_man):
+            with open(train_man, encoding="utf-8") as fh:
+                manifest_payload["training"] = json.load(fh)
+        locked_path = str(plan.get("locked_config_output") or os.path.join(root, LOCKED_FINAL_CONFIG_FILENAME))
+        if "locked_final_config" not in manifest_payload and os.path.isfile(locked_path):
+            manifest_payload["locked_final_config"] = locked_path
+        fairness_path = str(plan.get("fairness_check_output") or os.path.join(root, FAIRNESS_CHECK_FILENAME))
+        if "fairness_check" not in manifest_payload and os.path.isfile(fairness_path):
+            manifest_payload["fairness_check"] = fairness_path
+
+    with open(screening_manifest_path, "w", encoding="utf-8") as fh:
+        json.dump(_to_json_native(manifest_payload), fh, indent=2)
+    return manifest_payload
+
+
+if __name__ == "__main__":
+    main()
