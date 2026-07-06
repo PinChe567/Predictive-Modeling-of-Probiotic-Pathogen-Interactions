@@ -10,6 +10,7 @@ The project combines experimental microbial characterization, a synthetic multi-
 
 Author: Huang, P.-C. & Ciou, Z.-C.
 
+Download analysis_plan and code folders first.
 The computational workflow is organized into the following Python scripts:
 
 | Script | Purpose |
