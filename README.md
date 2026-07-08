@@ -40,15 +40,16 @@ Author: Huang, P.-C.
 
 The experimental data (locate in file: "experiment data") is provided in **Excel (.xlsx)** format. The files correspond to the results presented in **Figures 1** of the manuscript:
 
-### Figure 1: Bacterial Growth Kinetics & AMP Efficacy
+### Figure 1: Bacterial growth kinetics and preliminary AMP-response observations
 Growth dynamics of pathogenic *E. coli* and probiotic *L. lactis* for ODE model fitting.
 * **`E. coli growth curve OD.xlsx`**: Optical density (OD600) measurements for *E. coli*.
 * **`E. coli growth curve CFU.xlsx`**: Colony Forming Units (CFU) counts for *E. coli*.
 * **`L. lactis growth curve OD.xlsx`**: Standard growth curve (OD600) for *L. lactis*.
 * **`L. lactis growth curve CFU.xlsx`**: Standard growth curve (CFU) for *L. lactis*.
 
-Dose-response and resistance evolution assays using hBD-3 (AMP).
-* **`AMP to L. lactis OD.xlsx`**: Probiotic tolerance test under varying AMP concentrations (OD).
-* **`AMP to L. lactis CFU.xlsx`**: Probiotic tolerance test under varying AMP concentrations (CFU).
-* **`AMP to E. coli.xlsx`**: *E. coli* survival rates and killing efficiency.
-* **`AMP to E. coli second dose.xlsx`**: Adaptive resistance test (second-dose challenge).
+Growth dynamics of E. coli and L. lactis used to define representative CFU-scale and growth-scale ranges for simulation anchoring.
+Preliminary hBD-3 response assays used to define approximate AMP-response ranges. These experiments were not designed as statistically powered tolerance, resistance, or killing-coefficient calibration assays.
+* **`AMP to L. lactis OD.xlsx`**: Preliminary *L. lactis* AMP-response observation under varying hBD-3 concentrations.
+* **`AMP to L. lactis CFU.xlsx`**: Preliminary *L. lactis* AMP-response observation under varying hBD-3 concentrations.
+* **`AMP to E. coli.xlsx`**: Preliminary *E. coli* AMP-response observation.
+* **`AMP to E. coli second dose.xlsx`**: Preliminary repeated-exposure observation; not evidence of validated adaptive tolerance or stable resistance.
