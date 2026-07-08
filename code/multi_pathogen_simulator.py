@@ -182,15 +182,25 @@ def od_to_cfu_llactis(od600: float | np.ndarray) -> float | np.ndarray:
 
 
 def experimental_calibrated_provenance() -> dict:
-    """Parameter source notes for the experimental_calibrated profile."""
+    """Conservative provenance notes for the paper_figure profile.
+
+    The profile is experimentally anchored but not fully experimentally calibrated.
+    Numerical values used by the simulator are defined in _default_ode_profile().
+    """
     return {
-        "k_pathogen_source": "E. coli CFU logistic mean k = 0.241 h^-1",
-        "K_pathogen_source": "E. coli CFU stationary phase / manuscript reported ~1.5e9 CFU/mL",
-        "k_P_source": "L. lactis CFU logistic k = 0.2522 h^-1",
-        "K_P_source": "L. lactis OD-to-CFU converted YM average ≈ 3.35e8 CFU/mL",
-        "gamma_P_source": "preliminary AMP growth-rate suppression estimate ≈ 0.0015",
-        "non_identifiable_parameters": ["rho", "mu", "eta", "alpha", "beta", "lambda_amp"],
-        "assumption_parameters": ["rho", "mu", "eta", "alpha", "beta", "lambda_amp"],
+        "parameterization_scope": (
+            "Experimentally anchored synthetic paper_figure profile; not a fully "
+            "calibrated co-culture or clinical infection model."
+        ),
+        "experimental_anchor_scope": (
+            "E. coli and L. lactis monoculture growth / preliminary AMP-response "
+            "observations were used to define plausible simulation ranges and "
+            "CFU-scale provenance."
+        ),
+        "synthetic_archetype_note": (
+            "The five pathogen populations are E. coli-anchored synthetic archetypes "
+            "used for algorithmic stress testing."
+        ),
         "od_to_cfu_calibration": {
             "E_coli": {
                 "formula": "CFU = 3.14e8 * OD600 - 4.81e7",
@@ -201,10 +211,21 @@ def experimental_calibrated_provenance() -> dict:
                 "R2": LLACTIS_OD_TO_CFU_R2,
             },
         },
+        "non_directly_fitted_parameters": [
+            "multi-strain pathogen growth scaling",
+            "pathogen AMP-response scaling",
+            "rho",
+            "mu",
+            "eta",
+            "alpha",
+            "beta",
+            "lambda_amp",
+            "Umax optimizer grid",
+        ],
         "parameter_provenance_note": (
-            "Only k_pathogen, K_pathogen, k_P, K_P, and gamma_P are tied to experimental "
-            "growth-curve calibration. rho, mu, eta, alpha, beta, and lambda_amp remain "
-            "assumptions / sensitivity parameters and were not fitted from growth curves."
+            "Simulator values should be read from the paper_figure profile and "
+            "Supplementary Table S1. They should not be interpreted as direct "
+            "strain-specific experimental fits."
         ),
     }
 

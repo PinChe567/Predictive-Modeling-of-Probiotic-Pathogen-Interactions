@@ -10,15 +10,33 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from figure_audit import apply_matplotlib_style, diverging_heatmap_kwargs, save_figure
+from matplotlib.patches import Patch, Rectangle
 
+from figure_audit import (
+    FS_BASE,
+    FS_LEGEND,
+    FS_TICK,
+    FS_TITLE,
+    apply_matplotlib_style,
+    diverging_heatmap_kwargs,
+    finalize_figure_layout,
+    save_figure,
+)
+
+HEATMAP_EXCLUDE_COLS: Tuple[str, ...] = tuple(
+    [f"rho_{i}" for i in range(1, 6)] + [f"mu_{i}" for i in range(1, 6)]
+)
 BIO_COLS: List[str] = (
     [f"B0_{i}" for i in range(1, 6)]
     + [f"k_{i}" for i in range(1, 6)]
     + [f"g_{i}" for i in range(1, 6)]
-    + [f"rho_{i}" for i in range(1, 6)]
-    + [f"mu_{i}" for i in range(1, 6)]
 )
+COLUMN_HUE_GROUPS: Tuple[str, ...] = ("Biological Inputs", "Control Thresholds", "Outcomes")
+COLUMN_HUE_COLORS: Dict[str, str] = {
+    "Biological Inputs": "#5F97D2",
+    "Control Thresholds": "#D76364",
+    "Outcomes": "#B1CE46",
+}
 KPI_COLS: List[str] = ["P_AUC"] + [f"LR{i}" for i in range(1, 6)]
 BIO_KPI_COLS: List[str] = BIO_COLS + KPI_COLS
 Y_TTHR_COLS: List[str] = [f"Tthr_{i}" for i in range(1, 6)]
@@ -90,6 +108,24 @@ def build_merged_frame(
     return pd.concat([x_df.reset_index(drop=True), y_df.reset_index(drop=True)], axis=1)
 
 
+def column_hue_group(name: str) -> Optional[str]:
+    if name.startswith(("B0_", "k_", "g_")):
+        return "Biological Inputs"
+    if name.startswith("Tthr_"):
+        return "Control Thresholds"
+    if name == "P_AUC" or name.startswith("LR"):
+        return "Outcomes"
+    return None
+
+
+def filter_heatmap_correlation(corr: pd.DataFrame) -> pd.DataFrame:
+    """Drop rho/mu parameters from heatmap matrices (plot presentation only)."""
+    drop = [c for c in HEATMAP_EXCLUDE_COLS if c in corr.columns or c in corr.index]
+    if not drop:
+        return corr
+    return corr.drop(index=drop, columns=drop, errors="ignore")
+
+
 def select_columns(df: pd.DataFrame, subset: str) -> pd.DataFrame:
     if subset == "input":
         cols = [c for c in df.columns if c not in Y_TTHR_COLS]
@@ -113,6 +149,7 @@ def select_columns(df: pd.DataFrame, subset: str) -> pd.DataFrame:
         raise ValueError(f"Subset '{subset}' requires missing columns: {missing}")
     if not cols:
         raise ValueError(f"Subset '{subset}' selected zero columns.")
+    cols = [c for c in cols if c not in HEATMAP_EXCLUDE_COLS]
     return df[cols]
 
 
@@ -151,6 +188,46 @@ def compute_correlation(df: pd.DataFrame, method: str) -> pd.DataFrame:
     raise ValueError(f"Unknown correlation method: {method}")
 
 
+def _draw_hue_strip(ax, labels: Sequence[str], *, horizontal: bool) -> None:
+    n = len(labels)
+    if n == 0:
+        ax.set_visible(False)
+        return
+    if horizontal:
+        ax.set_xlim(-0.5, n - 0.5)
+        ax.set_ylim(0, 1)
+        for i, label in enumerate(labels):
+            group = column_hue_group(str(label))
+            if group is None:
+                continue
+            ax.add_patch(
+                Rectangle(
+                    (i - 0.5, 0),
+                    1,
+                    1,
+                    facecolor=COLUMN_HUE_COLORS[group],
+                    edgecolor="none",
+                )
+            )
+    else:
+        ax.set_ylim(n - 0.5, -0.5)
+        ax.set_xlim(0, 1)
+        for i, label in enumerate(labels):
+            group = column_hue_group(str(label))
+            if group is None:
+                continue
+            ax.add_patch(
+                Rectangle(
+                    (0, i - 0.5),
+                    1,
+                    1,
+                    facecolor=COLUMN_HUE_COLORS[group],
+                    edgecolor="none",
+                )
+            )
+    ax.axis("off")
+
+
 def plot_heatmap(
     corr: pd.DataFrame,
     outpath: str,
@@ -159,31 +236,77 @@ def plot_heatmap(
     dpi: int,
     clustered: bool,
 ) -> Tuple[str, str]:
-    plot_corr = corr
+    plot_corr = filter_heatmap_correlation(corr)
     if clustered:
         if not _SCIPY_AVAILABLE:
             print("scipy not available; skipping hierarchical clustering.")
         else:
-            order = cluster_order(corr)
-            plot_corr = corr.loc[order, order]
+            order = cluster_order(plot_corr)
+            plot_corr = plot_corr.loc[order, order]
 
     apply_matplotlib_style()
     n = plot_corr.shape[0]
     fig_w, fig_h = figsize
-    plt.figure(figsize=(fig_w, fig_h))
-    im = plt.imshow(
+    fig = plt.figure(figsize=(fig_w + 0.8, fig_h + 1.15))
+    gs = fig.add_gridspec(
+        2,
+        3,
+        width_ratios=[0.05, 1.0, 0.04],
+        height_ratios=[0.05, 1.0],
+        wspace=0.20,
+        hspace=0.03,
+        top=0.80,
+        bottom=0.10,
+        left=0.11,
+        right=0.92,
+    )
+    ax_col_hue = fig.add_subplot(gs[0, 1])
+    ax_row_hue = fig.add_subplot(gs[1, 0])
+    ax_main = fig.add_subplot(gs[1, 1])
+    ax_cbar = fig.add_subplot(gs[1, 2])
+
+    im = ax_main.imshow(
         plot_corr.values,
         aspect="auto",
         **diverging_heatmap_kwargs(plot_corr.values, fixed_limits=(-1.0, 1.0)),
     )
-    plt.colorbar(im, fraction=0.046, pad=0.04, label="Correlation")
-    tick_fs = max(6, min(10, int(220 / max(n, 1))))
-    plt.xticks(range(n), plot_corr.columns, rotation=90, fontsize=tick_fs)
-    plt.yticks(range(n), plot_corr.columns, fontsize=tick_fs)
-    plt.title(title)
-    plt.tight_layout()
-    png_path, svg_path = save_figure(plt.gcf(), outpath, dpi=dpi)
-    plt.close()
+    fig.colorbar(im, cax=ax_cbar, label="Correlation")
+    tick_fs = max(9, min(13, int(260 / max(n, 1))))
+    ax_main.set_xticks(range(n))
+    ax_main.set_xticklabels(plot_corr.columns, rotation=90, fontsize=tick_fs)
+    ax_main.set_yticks(range(n))
+    ax_main.set_yticklabels(plot_corr.columns, fontsize=tick_fs)
+    ax_main.tick_params(axis="both", labelsize=tick_fs, pad=2)
+    ax_cbar.tick_params(labelsize=FS_TICK + 1)
+    ax_cbar.set_ylabel("Correlation", fontsize=FS_BASE + 1)
+
+    _draw_hue_strip(ax_col_hue, list(plot_corr.columns), horizontal=True)
+    _draw_hue_strip(ax_row_hue, list(plot_corr.index), horizontal=False)
+
+    present_groups = {
+        column_hue_group(str(label))
+        for label in list(plot_corr.columns) + list(plot_corr.index)
+        if column_hue_group(str(label)) is not None
+    }
+    legend_handles = [
+        Patch(facecolor=COLUMN_HUE_COLORS[group], edgecolor="none", label=group)
+        for group in COLUMN_HUE_GROUPS
+        if group in present_groups
+    ]
+    fig.suptitle(title, y=0.98, fontsize=FS_TITLE + 1)
+    if legend_handles:
+        fig.legend(
+            handles=legend_handles,
+            loc="upper center",
+            bbox_to_anchor=(0.5, 0.875),
+            ncol=len(legend_handles),
+            frameon=False,
+            fontsize=FS_LEGEND + 1,
+        )
+
+    finalize_figure_layout(fig, rect=(0.0, 0.06, 1.0, 0.88))
+    png_path, svg_path = save_figure(fig, outpath, dpi=dpi)
+    plt.close(fig)
     return png_path, svg_path
 
 
@@ -260,8 +383,9 @@ def main() -> None:
     os.makedirs(args.outdir, exist_ok=True)
     outputs: Dict[str, Dict[str, str]] = {}
 
+    excluded = [c for c in HEATMAP_EXCLUDE_COLS if c in merged.columns]
     for corr_method in methods_to_run(args.method):
-        corr = compute_correlation(selected, corr_method)
+        corr = filter_heatmap_correlation(compute_correlation(selected, corr_method))
         basename = output_basename(args.output_prefix, args.subset, corr_method)
         png_path = os.path.join(args.outdir, f"{basename}.png")
         csv_path = os.path.join(args.outdir, f"{basename}_correlation_matrix.csv")
@@ -272,6 +396,13 @@ def main() -> None:
         print(f"Saved {svg_path}")
         print(f"Saved {csv_path}")
 
+    config_path = os.path.join(args.outdir, "heatmap_config.json")
+    prior: dict = {}
+    if os.path.exists(config_path):
+        with open(config_path, encoding="utf-8") as fh:
+            prior = json.load(fh)
+    merged_outputs = dict(prior.get("outputs") or {})
+    merged_outputs.update(outputs)
     config = {
         "x_csv": args.x_csv,
         "y_csv": args.y_csv,
@@ -288,10 +419,11 @@ def main() -> None:
         "scipy_available": _SCIPY_AVAILABLE,
         "title": title,
         "columns": list(selected.columns),
+        "excluded_columns": excluded,
+        "column_hue_groups": list(COLUMN_HUE_GROUPS),
         "n_rows": int(len(selected)),
-        "outputs": outputs,
+        "outputs": merged_outputs,
     }
-    config_path = os.path.join(args.outdir, "heatmap_config.json")
     with open(config_path, "w", encoding="utf-8") as fh:
         json.dump(config, fh, indent=2)
     print(f"Saved {config_path}")

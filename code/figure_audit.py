@@ -11,8 +11,6 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import matplotlib.colors as mcolors
-import matplotlib.gridspec as gridspec
-import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -32,6 +30,23 @@ PALETTE_BLUE_PERI = "#9394E7"
 
 PALETTE_WHITE = "#FFFFFF"
 COLOR_BG = "#F7F9FB"
+
+# Manuscript typography — adjust here to scale all figures together.
+FS_BASE = 12
+FS_TICK = 11
+FS_TICK_SM = 10
+FS_TITLE = 13
+FS_PANEL = 12
+FS_LEGEND = 11
+FS_LEGEND_SM = 10
+FS_ANNOT = 11
+FS_SIG = 12
+FS_NOTE = 10
+FS_TRAJECTORY_TITLE = 14
+FS_ODE_BACK = 13
+LAYOUT_PAD = 1.5
+LAYOUT_H_PAD = 1.6
+LAYOUT_W_PAD = 1.2
 
 # ---------------------------------------------------------------------------
 # Color usage (single source of truth for all manuscript figures)
@@ -80,13 +95,12 @@ def apply_matplotlib_style() -> None:
         {
             "font.family": "sans-serif",
             "font.sans-serif": ["Arial", "Helvetica", "DejaVu Sans"],
-            "font.size": 20,
-            "axes.titlesize": 22,
-            "axes.labelsize": 20,
-            "xtick.labelsize": 16,
-            "ytick.labelsize": 16,
-            "legend.fontsize": 16,
-            "figure.titlesize": 22,
+            "font.size": FS_BASE,
+            "axes.titlesize": FS_PANEL,
+            "axes.labelsize": FS_BASE,
+            "xtick.labelsize": FS_TICK,
+            "ytick.labelsize": FS_TICK,
+            "legend.fontsize": FS_LEGEND,
             "axes.prop_cycle": plt.cycler(color=BAR_CYCLE),
             "axes.edgecolor": "#333333",
             "axes.labelcolor": "#333333",
@@ -99,6 +113,44 @@ def apply_matplotlib_style() -> None:
             "axes.facecolor": "white",
         }
     )
+
+
+def finalize_figure_layout(
+    fig,
+    *,
+    rect: Optional[Tuple[float, float, float, float]] = None,
+    pad: float = LAYOUT_PAD,
+    h_pad: float = LAYOUT_H_PAD,
+    w_pad: float = LAYOUT_W_PAD,
+) -> None:
+    """Tighten subplot spacing without changing figure aspect ratio."""
+    kwargs = {"pad": pad, "h_pad": h_pad, "w_pad": w_pad}
+    if rect is not None:
+        kwargs["rect"] = rect
+    fig.tight_layout(**kwargs)
+
+
+def place_figure_legend_below(
+    fig,
+    handles,
+    labels,
+    *,
+    ncol: int,
+    y: float = -0.02,
+    frameon: bool = True,
+    bottom_rect: float = 0.12,
+) -> None:
+    """Legend below all panels; reserves bottom margin so labels do not overlap."""
+    fig.legend(
+        handles,
+        labels,
+        ncol=ncol,
+        fontsize=FS_LEGEND,
+        frameon=frameon,
+        loc="upper center",
+        bbox_to_anchor=(0.5, y),
+    )
+    finalize_figure_layout(fig, rect=(0.0, bottom_rect, 1.0, 0.98))
 
 
 def companion_svg_path(path: str) -> str:
@@ -209,6 +261,7 @@ MODEL_DISPLAY_LABELS = {
 }
 
 MAIN_COMPARE_ORDER = [TAR_MODEL, RANDOM_FOREST, UNIFORM_TREE_MEAN, BEST_SINGLE_TREE]
+ODE_BACK_BAR_MODEL_ORDER = [TAR_MODEL, RANDOM_FOREST, BEST_SINGLE_TREE, UNIFORM_TREE_MEAN]
 MANUSCRIPT_BAR_MODEL_ORDER = MAIN_COMPARE_ORDER
 
 FIG3_ARCHITECTURE_TEXT = (
@@ -264,57 +317,25 @@ FIG4_SIGNIFICANCE_RULE_TEXT = (
     "control_better recorded in CSV without stars; no stars when n_repeats < 10"
 )
 
-FIG5_MAIN_BASENAME = "umax_main"
-FIG5_MAIN_PANEL_ORDER: List[Tuple[str, str, str]] = [
-    ("A", "panel_schematic", "Post-prediction Umax optimizer schematic"),
-    ("B", "panel_composite_penalty", "Composite penalty policy ablation"),
-    ("C", "panel_multi_metric", "Multi-metric policy ablation summary"),
-    ("D", "panel_ode_simplified", "Representative ODE trajectories (simplified)"),
-]
 FIG5_PANEL_ORDER: List[Tuple[str, str, str]] = [
-    (panel, f"{FIG5_MAIN_BASENAME}.png", desc) for panel, _, desc in FIG5_MAIN_PANEL_ORDER
+    ("A", "umax_score_landscape.png", "Umax-response landscape"),
+    ("B", "umax_constraint_feasibility.png", "Constraint feasibility across Umax"),
+    ("C", "umax_ode_ablation.png", "Representative ODE ablation trajectories"),
+    ("D", "umax_summary_ablation.png", "TAR-only Umax policy ablation summary"),
 ]
-FIG5_PRIMARY_FIGURES: Tuple[str, ...] = (f"{FIG5_MAIN_BASENAME}.png",)
-
-FIG5_SUPPLEMENTARY_BASENAMES: Tuple[str, ...] = (
-    "umax_constraint_satisfaction",
-    "umax_score_minimum_landscape",
-    "umax_score_components",
-    "umax_ode_ablation_full",
-)
-FIG5_COMPOSITE_SUPPLEMENTARY_BASENAME = "umax_summary_ablation_composite_supplementary"
-FIG5_ALL_SUPPLEMENTARY_BASENAMES: Tuple[str, ...] = FIG5_SUPPLEMENTARY_BASENAMES + (
-    FIG5_COMPOSITE_SUPPLEMENTARY_BASENAME,
-)
-FIG5_ODE_POLICY_ORDER: Tuple[str, ...] = (
-    "TAR_optimized",
-    "TAR_fixed_training_median",
-    "TAR_fixed_training_tuned_global",
-)
-FIG5_CANONICAL_FIGURE_STEMS: Tuple[str, ...] = (
-    FIG5_MAIN_BASENAME,
-    *FIG5_SUPPLEMENTARY_BASENAMES,
-    FIG5_COMPOSITE_SUPPLEMENTARY_BASENAME,
-)
+FIG5_PRIMARY_FIGURES: Tuple[str, ...] = tuple(panel[1] for panel in FIG5_PANEL_ORDER)
 
 FIG5_MAIN_SUMMARY_METRICS: Tuple[Tuple[str, str], ...] = (
     ("mean_total_dosage", "Total dosage"),
-    ("mean_P_AUC", "P_AUC"),
+    ("mean_P_AUC", r"$P_{AUC}$"),
     ("mean_LR", "Mean LR"),
     ("mean_terminal_pathogen", "Terminal pathogen"),
 )
 
-FIG5_MAIN_METRIC_PANEL_TITLES: Tuple[Tuple[str, str], ...] = (
-    ("mean_total_dosage", "Total dosage ↓"),
-    ("mean_P_AUC", "P_AUC ↑"),
-    ("mean_LR", "Mean LR ↑"),
-    ("mean_terminal_pathogen", "Terminal pathogen ↓"),
-)
-
 FIG5_ABLATION_SHORT_LABELS: Dict[str, str] = {
-    "TAR_optimized": "Optimized Umax",
-    "TAR_fixed_training_median": "Training-median Umax",
-    "TAR_fixed_training_tuned_global": "Training-tuned global Umax",
+    "TAR_optimized": "Optimized",
+    "TAR_fixed_training_median": "Training median",
+    "TAR_fixed_training_tuned_global": "Training-tuned global",
 }
 
 FIG5_ABLATION_BAR_COLORS: Dict[str, str] = {
@@ -324,9 +345,9 @@ FIG5_ABLATION_BAR_COLORS: Dict[str, str] = {
 }
 
 FIG5_ODE_POLICY_SHORT_LABELS: Dict[str, str] = {
-    "TAR_optimized": "Optimized Umax",
-    "TAR_fixed_training_median": "Training-median Umax",
-    "TAR_fixed_training_tuned_global": "Training-tuned global Umax",
+    "TAR_fixed_training_median": "Training median",
+    "TAR_fixed_training_tuned_global": "Training-tuned global",
+    "TAR_optimized": "Optimized",
 }
 
 FIXED_UMAX_VALIDATION_SUBDIR = "fixed_umax_validation"
@@ -458,8 +479,9 @@ def plot_metric_barplot(
     bars = ax.bar(x, y, edgecolor="white", linewidth=1.0, color=colors, width=0.72)
     ax.set_xticks(x)
     ax.set_xticklabels(display_labels, rotation=35, ha="right")
+    ax.tick_params(axis="x", pad=5)
     ax.set_ylabel(ylabel)
-    ax.set_title(title)
+    ax.set_title(title, pad=2)
     ax.grid(axis="y", linestyle="--", alpha=0.35)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
@@ -507,14 +529,14 @@ def plot_metric_barplot(
             )
             ax.text(
                 (x1 + x2) / 2.0, y_bracket + tick_h + 0.015 * yspan,
-                label, ha="center", va="bottom", fontsize=22, fontweight="bold",
+                label, ha="center", va="bottom", fontsize=13, fontweight="bold",
             )
             max_bracket_top = max(max_bracket_top, y_bracket + tick_h + 0.08 * yspan)
         if valid_pairs:
             ax.set_ylim(bottom=min(ymin - 0.05 * yspan, ax.get_ylim()[0]), top=max_bracket_top + 0.08 * yspan)
 
     if own_fig:
-        fig.tight_layout()
+        finalize_figure_layout(fig, rect=(0.0, 0.16, 1.0, 1.0))
         save_figure(fig, outpath)
         plt.close(fig)
     return ax
@@ -535,7 +557,7 @@ def plot_r2_barplot(
         summary_df=summary_df,
         outpath=outpath,
         metric_col="mean_R2_original",
-        ylabel="Mean target-wise $R^2$",
+        ylabel="Mean target-wise $R^2$ (original scale)",
         title=title,
         model_order=model_order,
         pin_first=pin_first,
@@ -619,8 +641,8 @@ def plot_target_weight_heatmap(weights_df: pd.DataFrame, outpath: str, stacker_t
     im = plt.imshow(pivot.values, aspect="auto", **sequential_heatmap_kwargs(pivot.values))
     cbar_label = "Ridge coefficient" if stacker_type == "ridge" else "Convex weight"
     plt.colorbar(im, fraction=0.046, pad=0.04, label=cbar_label)
-    plt.xticks(range(pivot.shape[1]), pivot.columns, rotation=90, fontsize=16)
-    plt.yticks(range(pivot.shape[0]), pivot.index, fontsize=18)
+    plt.xticks(range(pivot.shape[1]), pivot.columns, rotation=90, fontsize=10)
+    plt.yticks(range(pivot.shape[0]), pivot.index, fontsize=11)
     plt.xlabel("Expert")
     plt.ylabel("Target")
     plt.title("Target-wise stacking coefficients")
@@ -661,9 +683,9 @@ def plot_per_target_metric_heatmap(
         fig = ax.figure
         fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label=cbar_label)
     ax.set_xticks(range(pivot.shape[1]))
-    ax.set_xticklabels(pivot.columns, rotation=45, ha="right", fontsize=16)
+    ax.set_xticklabels(pivot.columns, rotation=45, ha="right", fontsize=10)
     ax.set_yticks(range(pivot.shape[0]))
-    ax.set_yticklabels([model_display_label(m) for m in pivot.index], fontsize=18)
+    ax.set_yticklabels([model_display_label(m) for m in pivot.index], fontsize=11)
     ax.set_xlabel("Target")
     ax.set_ylabel("Model")
     if own_fig:
@@ -713,7 +735,7 @@ def plot_ode_back_r2_barplot(
     ylabel: str = "Mean functional outcome $R^2$",
 ) -> None:
     """Bar plot of repeat-averaged ODE-back R² with 95% CI and TAR significance brackets."""
-    order = model_order or list(MAIN_COMPARE_ORDER)
+    order = model_order or list(ODE_BACK_BAR_MODEL_ORDER)
     plot_df = _normalize_ode_back_summary_df(summary_df, metric_col=metric_col)
     plot_df = plot_df[plot_df["model"].isin(order)].copy()
     if plot_df.empty or metric_col not in plot_df.columns:
@@ -734,6 +756,12 @@ def plot_ode_back_r2_barplot(
         significance_pairs=significance_pairs,
         ax=ax,
     )
+    ax.set_title(title, fontsize=FS_ODE_BACK, pad=2)
+    ax.set_ylabel(ylabel, fontsize=FS_ODE_BACK)
+    ax.tick_params(axis="both", labelsize=FS_TICK + 1)
+    for text in ax.texts:
+        if text.get_fontweight() == "bold":
+            text.set_fontsize(FS_SIG + 1)
     if {ci_low_col, ci_high_col}.issubset(plot_df.columns):
         lo = float(np.nanmin(plot_df[ci_low_col].to_numpy(dtype=float)))
         hi = float(np.nanmax(plot_df[ci_high_col].to_numpy(dtype=float)))
@@ -745,18 +773,7 @@ def plot_ode_back_r2_barplot(
             yspan = max(hi - lo, 0.005)
             cur_lo, cur_hi = ax.get_ylim()
             ax.set_ylim(lo - 0.25 * yspan, max(cur_hi, hi + 0.35 * yspan))
-    if n_repeats >= 10:
-        ax.text(
-            0.02,
-            0.02,
-            f"n repeats = {n_repeats}",
-            transform=ax.transAxes,
-            fontsize=18,
-            va="bottom",
-            ha="left",
-            color="#444444",
-        )
-    fig.tight_layout()
+    finalize_figure_layout(fig, rect=(0.0, 0.16, 1.0, 1.0))
     save_figure(fig, outpath)
     plt.close(fig)
 
@@ -810,9 +827,9 @@ def plot_ode_back_outcome_heatmap(
     im = ax.imshow(pivot.values, aspect="auto", **sequential_heatmap_kwargs(pivot.values))
     plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label="$R^2$")
     ax.set_xticks(range(len(cols)))
-    ax.set_xticklabels(cols, rotation=45, ha="right", fontsize=16)
+    ax.set_xticklabels(cols, rotation=45, ha="right", fontsize=10)
     ax.set_yticks(range(len(pivot)))
-    ax.set_yticklabels([model_display_label(m) for m in pivot.index], fontsize=18)
+    ax.set_yticklabels([model_display_label(m) for m in pivot.index], fontsize=11)
     ax.set_xlabel("Functional outcome")
     ax.set_ylabel("Model")
     ax.set_title("ODE-back functional outcome $R^2$")
@@ -874,8 +891,8 @@ def plot_ode_back_pred_vs_ref_scatter(
         ax.grid(True, linestyle="--", alpha=0.3)
     handles, labels = axes[0].get_legend_handles_labels()
     if handles:
-        fig.legend(handles, labels, loc="upper center", ncol=min(len(order), 4), bbox_to_anchor=(0.5, 1.02))
-    fig.tight_layout(rect=(0, 0, 1, 0.92))
+        fig.legend(handles, labels, loc="upper center", ncol=min(len(order), 4), bbox_to_anchor=(0.5, 0.99), fontsize=FS_LEGEND)
+    finalize_figure_layout(fig, rect=(0, 0, 1, 0.90))
     save_figure(fig, outpath)
     plt.close(fig)
 
@@ -916,7 +933,8 @@ def plot_model_metric_combined_panel(
         ax=axes[1],
     )
     axes[1].set_title(f"Per-target {heatmap_cbar_label}")
-    fig.tight_layout()
+    axes[0].set_title(summary_title, pad=2)
+    finalize_figure_layout(fig, rect=(0.0, 0.14, 1.0, 1.0))
     save_figure(fig, outpath)
     plt.close(fig)
 
@@ -927,7 +945,7 @@ def plot_prediction_error_heatmap(per_target_df: pd.DataFrame, outpath: str, mod
         outpath,
         models,
         "RMSE_original",
-        "RMSE",
+        "RMSE (original scale)",
     )
 
 
@@ -1022,7 +1040,7 @@ def _scatter_uncertainty_trend(
     *,
     spearman_rho: Optional[float] = None,
     pearson_r2: Optional[float] = None,
-    show_pearson_r2: bool = False,
+    show_pearson_r2: bool = True,
     stats_x: Optional[np.ndarray] = None,
     stats_y: Optional[np.ndarray] = None,
     trend_x: Optional[np.ndarray] = None,
@@ -1045,7 +1063,7 @@ def _scatter_uncertainty_trend(
         if np.isfinite(r2):
             stat_lines.append(f"Pearson $r^2$={r2:.2f}")
     if np.isfinite(rho):
-        stat_lines.append(f"Spearman $\\rho$={rho:.2f}")
+        stat_lines.append(f"Spearman $\\rho$ = {rho:.2f}")
     if stat_lines:
         ax.text(
             0.03,
@@ -1053,7 +1071,7 @@ def _scatter_uncertainty_trend(
             "\n".join(stat_lines),
             transform=ax.transAxes,
             va="top",
-            fontsize=16,
+            fontsize=10,
             color="0.25",
         )
 
@@ -1101,7 +1119,9 @@ def _plot_uncertainty_by_target_bars(
 ) -> None:
     if per_target.empty or len(targets) <= 1:
         return
-    fig_bar, axes_bar = plt.subplots(1, 2, figsize=(8.5, 3.8))
+    fig_bar, axes_bar = plt.subplots(
+        1, 2, figsize=(7.4, 3.8), gridspec_kw={"width_ratios": [1.15, 0.85]},
+    )
     x = np.arange(len(targets))
     ale = [float(per_target.loc[per_target["target"] == t, "mean_aleatoric_std"].iloc[0]) for t in targets]
     epi = [float(per_target.loc[per_target["target"] == t, "mean_epistemic_std"].iloc[0]) for t in targets]
@@ -1149,7 +1169,7 @@ def _plot_uncertainty_by_target_bars(
     axes_bar[0].set_xticklabels(targets)
     axes_bar[0].set_ylabel("Mean std")
     axes_bar[0].set_title("Aleatoric vs epistemic by target")
-    axes_bar[0].legend(frameon=False, fontsize=16, loc="upper center", bbox_to_anchor=(0.5, 1.22), ncol=2)
+    axes_bar[0].legend(frameon=False, fontsize=FS_LEGEND, loc="upper center", bbox_to_anchor=(0.5, 1.22), ncol=2)
     axes_bar[0].grid(axis="y", linestyle="--", alpha=0.35)
     axes_bar[1].bar(
         x,
@@ -1167,7 +1187,7 @@ def _plot_uncertainty_by_target_bars(
     axes_bar[1].set_ylabel("Epistemic / total")
     axes_bar[1].set_title("Epistemic fraction by target")
     axes_bar[1].grid(axis="y", linestyle="--", alpha=0.35)
-    fig_bar.tight_layout()
+    fig_bar.tight_layout(rect=(0.0, 0.0, 1.0, 0.90))
     save_figure(fig_bar, outpath)
     plt.close(fig_bar)
 
@@ -1212,7 +1232,16 @@ def _render_uncertainty_column(
     ax_ale.set_xlabel("Aleatoric std")
     if col_idx == 0:
         ax_ale.set_ylabel("|error|")
-    ax_ale.set_title(title, fontsize=18)
+    if col_idx == 0:
+        ax_ale.legend(
+            handles=[
+                plt.Line2D([0], [0], marker="o", linestyle="", color=PALETTE_BLUE_MID, label="Aleatoric"),
+                plt.Line2D([0], [0], marker="o", linestyle="", color=PALETTE_RED_MID, label="Epistemic"),
+            ],
+            frameon=False,
+            fontsize=10,
+            loc="upper left",
+        )
     ax_ale.grid(axis="both", linestyle="--", alpha=0.25)
 
     ax_epi = axes[1, col_idx]
@@ -1283,6 +1312,8 @@ def plot_uncertainty_decomposition(
         ale_subs.append(ale_sub)
         epi_subs.append(epi_sub)
         _render_uncertainty_column(axes, col_idx, target, ale_full, epi_full, ale_sub, epi_sub)
+        axes[0, col_idx].set_title(target, fontsize=11)
+        axes[1, col_idx].set_title(target, fontsize=11)
 
     if n_targets > 1:
         ale_all_full = tthr_case[["aleatoric_std", "abs_error"]].dropna()
@@ -1298,19 +1329,16 @@ def plot_uncertainty_decomposition(
             ale_all_sub,
             epi_all_sub,
         )
+        axes[0, n_targets].set_title("All Tthr", fontsize=11)
+        axes[1, n_targets].set_title("All Tthr", fontsize=11)
 
     if not per_target.empty and n_targets > 1:
         stem, ext = os.path.splitext(outpath)
         per_target_path = f"{stem}_by_target{ext}"
         _plot_uncertainty_by_target_bars(per_target, targets, per_target_path, n_repeats=n_repeats)
 
-    method_label = "MC Dropout" if method == "mc_dropout" else "Deep Ensembles"
-    fig.suptitle(
-        f"Uncertainty vs |error| ({method_label})",
-        y=1.02,
-        fontsize=22,
-    )
-    fig.tight_layout()
+    fig.suptitle("Uncertainty decomposition", y=0.99, fontsize=FS_TITLE)
+    finalize_figure_layout(fig, rect=(0.0, 0.04, 1.0, 0.95))
     save_figure(fig, outpath)
     plt.close(fig)
 
@@ -1367,12 +1395,15 @@ def plot_representative_ode_trajectory(
 
     fig, axes = plt.subplots(3, 1, figsize=(10, 8), sharex=True)
     axes[0].plot(times, C, color=TRAJECTORY_AMP, linewidth=1.8)
-    axes[0].set_ylabel(r"AMP ($\mu$g mL$^{-1}$)")
-    axes[0].set_title("AMP concentration")
+    axes[0].set_ylabel(r"AMP ($\mu$g mL$^{-1}$)", labelpad=10)
+    axes[0].set_title(f"AMP concentration ({total_dosage:.1f} µg/mL total)", fontsize=FS_TRAJECTORY_TITLE)
 
     axes[1].plot(times, P_total / 1e6, color=TRAJECTORY_PROBIOTIC, linewidth=1.8)
-    axes[1].set_ylabel(r"Probiotic ($\times 10^6$ CFU mL$^{-1}$)")
-    axes[1].set_title("Probiotic")
+    axes[1].set_ylabel(r"Probiotic ($\times 10^6$ CFU mL$^{-1}$)", labelpad=10)
+    axes[1].set_title(
+        "Probiotic (total, S/R)" if probiotic_two_compartment else "Probiotic",
+        fontsize=FS_TRAJECTORY_TITLE,
+    )
 
     pathogen_colors = TRAJECTORY_PATHOGENS[:N_ODE_STRAINS]
     for i in range(N_ODE_STRAINS):
@@ -1390,10 +1421,10 @@ def plot_representative_ode_trajectory(
             label="_nolegend_",
         )
     axes[2].set_xlabel("Time (h)")
-    axes[2].set_ylabel(r"Pathogen strain ($\times 10^6$ CFU mL$^{-1}$)")
-    axes[2].set_title("Pathogens")
-    axes[2].legend(ncol=5, fontsize=16, frameon=False)
-    fig.tight_layout()
+    axes[2].set_ylabel(r"Pathogen strain ($\times 10^6$ CFU mL$^{-1}$)", labelpad=10)
+    axes[2].set_title("Pathogens", fontsize=FS_TRAJECTORY_TITLE)
+    axes[2].legend(ncol=5, fontsize=FS_LEGEND, frameon=False, loc="upper right")
+    finalize_figure_layout(fig, h_pad=2.4)
     save_figure(fig, outpath)
     plt.close(fig)
 
@@ -1455,13 +1486,13 @@ def plot_fixed_umax_representative(
         title = display_labels[col] if col < len(display_labels) else _closed_loop_display_label(model_name)
 
         axes[0, col].plot(times, C, linewidth=1.8, color=TRAJECTORY_AMP)
-        axes[0, col].set_title(title, fontsize=22)
+        axes[0, col].set_title(title, fontsize=FS_TRAJECTORY_TITLE, pad=8)
         if col == 0:
-            axes[0, col].set_ylabel(r"AMP ($\mu$g mL$^{-1}$)")
+            axes[0, col].set_ylabel(r"AMP ($\mu$g mL$^{-1}$)", labelpad=10)
 
         axes[1, col].plot(times, P_total / 1e6, linewidth=1.8, color=TRAJECTORY_PROBIOTIC)
         if col == 0:
-            axes[1, col].set_ylabel(r"Probiotic ($\times10^6$ CFU mL$^{-1}$)")
+            axes[1, col].set_ylabel(r"Probiotic ($\times10^6$ CFU mL$^{-1}$)", labelpad=10)
 
         for i in range(N_ODE_STRAINS):
             color_i = pathogen_colors[i]
@@ -1478,26 +1509,26 @@ def plot_fixed_umax_representative(
             )
         axes[2, col].set_xlabel("Time (h)")
         if col == 0:
-            axes[2, col].set_ylabel(r"Pathogen strain ($\times10^6$ CFU mL$^{-1}$)")
+            axes[2, col].set_ylabel(r"Pathogen strain ($\times10^6$ CFU mL$^{-1}$)", labelpad=10)
             legend_handles, legend_labels = axes[2, col].get_legend_handles_labels()
 
-    if legend_handles and legend_labels:
-        fig.legend(
-            legend_handles,
-            legend_labels,
-            ncol=min(6, len(legend_labels)),
-            fontsize=16,
-            frameon=True,
-            loc="lower center",
-            bbox_to_anchor=(0.5, -0.02),
-        )
     for row in range(3):
         ylims = [axes[row, c].get_ylim() for c in range(n_cols)]
         ymin = min(0.0, *(y[0] for y in ylims))
         ymax = max(y[1] for y in ylims)
         for c in range(n_cols):
             axes[row, c].set_ylim(ymin, ymax * 1.03)
-    fig.tight_layout()
+    if legend_handles and legend_labels:
+        fig.legend(
+            legend_handles,
+            legend_labels,
+            ncol=5,
+            fontsize=FS_LEGEND,
+            frameon=False,
+            loc="upper center",
+            bbox_to_anchor=(0.5, 0.02),
+        )
+    finalize_figure_layout(fig, rect=(0.0, 0.08, 1.0, 0.98), h_pad=2.0, w_pad=1.4)
     save_figure(fig, outpath)
     plt.close(fig)
 
@@ -1724,13 +1755,14 @@ def _plot_metric_panel_with_ci(
     display_labels: Optional[Sequence[str]] = None,
     bar_colors: Optional[Sequence[str]] = None,
     horizontal: bool = False,
+    horizontal_bar_height: float = 0.92,
 ) -> None:
     model_names = plot_df["model"].tolist()
     if display_labels is None:
         display_labels = [_closed_loop_display_label(m) for m in model_names]
     else:
         display_labels = list(display_labels)
-    pos = np.arange(len(plot_df))
+    x = np.arange(len(plot_df))
     y = plot_df[metric_col].to_numpy(dtype=float)
     colors = list(bar_colors) if bar_colors is not None else colors_for_models(model_names)
 
@@ -1754,48 +1786,72 @@ def _plot_metric_panel_with_ci(
         span = max(data_top - data_bottom, 1e-12 * max(abs(data_top), 1.0))
         bar_baseline = data_bottom - ylim_pad_fraction * span
 
-    bar_lengths = y - bar_baseline if baseline_focus_bars else y
+    bar_heights = y - bar_baseline if baseline_focus_bars else y
     if horizontal:
+        if significance_pairs:
+            raise ValueError("_plot_metric_panel_with_ci: horizontal bars do not support significance brackets")
+        y_pos = x
         bars = ax.barh(
-            pos,
-            bar_lengths,
+            y_pos,
+            bar_heights,
             left=bar_baseline if baseline_focus_bars else 0.0,
             edgecolor="white",
             linewidth=1.0,
             color=colors,
-            height=0.72,
+            height=horizontal_bar_height,
         )
-        ax.set_yticks(pos)
-        ax.set_yticklabels(display_labels, fontsize=18)
+        ax.set_yticks(y_pos)
+        ax.set_yticklabels(display_labels, fontsize=FS_TICK)
         ax.set_xlabel(ylabel)
         ax.grid(axis="x", linestyle="--", alpha=0.35)
-    else:
-        bars = ax.bar(
-            pos,
-            bar_lengths,
-            bottom=bar_baseline if baseline_focus_bars else 0.0,
-            edgecolor="white",
-            linewidth=1.0,
-            color=colors,
-            width=0.72,
-        )
-        ax.set_xticks(pos)
-        ax.set_xticklabels(display_labels, rotation=35, ha="right", fontsize=16)
-        ax.set_ylabel(ylabel)
-        ax.grid(axis="y", linestyle="--", alpha=0.35)
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        ax.margins(y=0.06)
+        if lo is not None and hi is not None and np.any(np.isfinite(lo)) and np.any(np.isfinite(hi)):
+            xerr = np.vstack([np.maximum(y - lo, 0.0), np.maximum(hi - y, 0.0)])
+            centers = [bar.get_y() + bar.get_height() / 2 for bar in bars]
+            ax.errorbar(y, centers, xerr=xerr, fmt="none", capsize=4, linewidth=1.0, color="black")
+        if ylim_fixed is not None:
+            ax.set_xlim(ylim_fixed[0], ylim_fixed[1])
+        elif baseline_focus_bars:
+            data_left = float(np.nanmin(bar_bottoms)) if np.any(np.isfinite(bar_bottoms)) else float(np.nanmin(y))
+            data_right = float(np.nanmax(bar_tops)) if np.any(np.isfinite(bar_tops)) else float(np.nanmax(y))
+            span = max(data_right - data_left, 1e-12 * max(abs(data_right), 1.0))
+            pad = 0.28 * span
+            ax.set_xlim(bar_baseline, data_right + pad)
+        elif focus_ylim:
+            data_left = float(np.nanmin(bar_bottoms)) if np.any(np.isfinite(bar_bottoms)) else float(np.nanmin(y))
+            data_right = float(np.nanmax(bar_tops)) if np.any(np.isfinite(bar_tops)) else float(np.nanmax(y))
+            if not np.isfinite(data_left) or not np.isfinite(data_right):
+                return
+            span = max(data_right - data_left, 1e-9 * max(abs(data_right), 1.0))
+            pad = ylim_pad_fraction * span
+            ax.set_xlim(data_left - pad, data_right + pad)
+        return
+
+    bars = ax.bar(
+        x,
+        bar_heights,
+        bottom=bar_baseline if baseline_focus_bars else 0.0,
+        edgecolor="white",
+        linewidth=1.0,
+        color=colors,
+        width=0.72,
+    )
+    ax.set_xticks(x)
+    ax.set_xticklabels(display_labels, rotation=35, ha="right", fontsize=FS_TICK_SM)
+    ax.tick_params(axis="x", pad=5)
+    ax.set_ylabel(ylabel)
+    ax.grid(axis="y", linestyle="--", alpha=0.35)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
 
     if lo is not None and hi is not None and np.any(np.isfinite(lo)) and np.any(np.isfinite(hi)):
-        xerr = np.vstack([np.maximum(y - lo, 0.0), np.maximum(hi - y, 0.0)])
-        if horizontal:
-            centers = [bar.get_y() + bar.get_height() / 2 for bar in bars]
-            ax.errorbar(y, centers, xerr=xerr, fmt="none", capsize=4, linewidth=1.0, color="black")
-        else:
-            centers = [bar.get_x() + bar.get_width() / 2 for bar in bars]
-            ax.errorbar(centers, y, yerr=xerr, fmt="none", capsize=4, linewidth=1.0, color="black")
+        yerr = np.vstack([np.maximum(y - lo, 0.0), np.maximum(hi - y, 0.0)])
+        centers = [bar.get_x() + bar.get_width() / 2 for bar in bars]
+        ax.errorbar(centers, y, yerr=yerr, fmt="none", capsize=4, linewidth=1.0, color="black")
 
-    if significance_pairs and not horizontal:
+    if significance_pairs:
         model_to_x = {model: idx for idx, model in enumerate(plot_df["model"])}
         valid_pairs = [
             (a, b, lbl)
@@ -1828,7 +1884,7 @@ def _plot_metric_panel_with_ci(
                 label,
                 ha="center",
                 va="bottom",
-                fontsize=20,
+                fontsize=FS_SIG,
                 fontweight="bold",
             )
             max_bracket_top = max(max_bracket_top, y_bracket + tick_h + 0.08 * yspan)
@@ -1836,10 +1892,7 @@ def _plot_metric_panel_with_ci(
             ax.set_ylim(bottom=ymin - 0.05 * yspan, top=max_bracket_top + 0.05 * yspan)
 
     if ylim_fixed is not None:
-        if horizontal:
-            ax.set_xlim(ylim_fixed[0], ylim_fixed[1])
-        else:
-            ax.set_ylim(ylim_fixed[0], ylim_fixed[1])
+        ax.set_ylim(ylim_fixed[0], ylim_fixed[1])
     elif baseline_focus_bars:
         data_bottom = float(np.nanmin(bar_bottoms)) if np.any(np.isfinite(bar_bottoms)) else float(np.nanmin(y))
         data_top = float(np.nanmax(bar_tops)) if np.any(np.isfinite(bar_tops)) else float(np.nanmax(y))
@@ -1859,53 +1912,13 @@ def _plot_metric_panel_with_ci(
             return
         span = max(data_top - data_bottom, 1e-9 * max(abs(data_top), 1.0))
         pad = ylim_pad_fraction * span
-        if horizontal:
-            left = data_bottom - pad
-            right = data_top + pad
-            if significance_pairs:
-                bracket_right, _ = ax.get_xlim()
-                if np.isfinite(bracket_right) and bracket_right > right:
-                    right = bracket_right + 0.04 * span
-            ax.set_xlim(left, right)
-        else:
-            bottom = data_bottom - pad
-            top = data_top + pad
-            if significance_pairs:
-                _, bracket_top = ax.get_ylim()
-                if np.isfinite(bracket_top) and bracket_top > top:
-                    top = bracket_top + 0.04 * span
-            ax.set_ylim(bottom, top)
-
-
-def _umax_ode_policy_order(condition_labels: Sequence[str]) -> List[str]:
-    """Plot order with per-case Optimized Umax leftmost."""
-    return [c for c in FIG5_ODE_POLICY_ORDER if c in condition_labels]
-
-
-def _umax_ode_display_labels_by_condition(
-    conditions: Sequence[str],
-    display_labels: Optional[Sequence[str]] = None,
-) -> Dict[str, str]:
-    del display_labels
-    return {
-        cond: FIG5_ODE_POLICY_SHORT_LABELS.get(cond, cond)
-        for cond in conditions
-    }
-
-
-def _cleanup_legacy_umax_figures(figure_dir: str) -> None:
-    """Remove superseded Umax figure exports; keep only canonical stems."""
-    if not os.path.isdir(figure_dir):
-        return
-    keep = {f"{stem}.{ext}" for stem in FIG5_CANONICAL_FIGURE_STEMS for ext in ("png", "svg")}
-    for fname in os.listdir(figure_dir):
-        if fname in keep:
-            continue
-        if fname.endswith(".png") or fname.endswith(".svg"):
-            try:
-                os.remove(os.path.join(figure_dir, fname))
-            except OSError:
-                pass
+        bottom = data_bottom - pad
+        top = data_top + pad
+        if significance_pairs:
+            _, bracket_top = ax.get_ylim()
+            if np.isfinite(bracket_top) and bracket_top > top:
+                top = bracket_top + 0.04 * span
+        ax.set_ylim(bottom, top)
 
 
 def _augment_closed_loop_plot_stats(stats_df: pd.DataFrame, outdir: str) -> pd.DataFrame:
@@ -2020,12 +2033,12 @@ def plot_fixed_umax_summary(
 
     if n_repeats <= 1:
         fig.suptitle(
-            "Fixed Umax forward comparison",
-            fontsize=20,
-            y=1.02,
+            "Fixed Umax forward comparison (3 ODE runs; point estimates, no repeat-level CI)",
+            fontsize=FS_TITLE,
+            y=0.99,
         )
 
-    fig.tight_layout()
+    finalize_figure_layout(fig, rect=(0.0, 0.14, 1.0, 0.96 if n_repeats <= 1 else 1.0))
     save_figure(fig, outpath)
     plt.close(fig)
 
@@ -2532,416 +2545,6 @@ def _load_umax_candidates_csv_for_plot(
     return work
 
 
-def _annotate_panel_letter(ax, letter: str, *, x: float = -0.10, y: float = 1.06, fontsize: int = 24) -> None:
-    ax.text(
-        x, y, letter, transform=ax.transAxes,
-        fontsize=fontsize, fontweight="bold", va="top", ha="left",
-    )
-
-
-def _draw_umax_optimizer_schematic(ax) -> None:
-    """Render a compact post-prediction Umax optimizer flow (plain text, no LaTeX)."""
-    ax.set_xlim(0.0, 1.0)
-    ax.set_ylim(0.0, 1.0)
-    ax.axis("off")
-
-    def _box(cx: float, cy: float, text: str, *, width: float = 0.14, height: float = 0.11, fc: str = "#F7F9FB"):
-        rect = mpatches.FancyBboxPatch(
-            (cx - width / 2, cy - height / 2),
-            width,
-            height,
-            boxstyle="round,pad=0.012,rounding_size=0.02",
-            linewidth=0.9,
-            edgecolor="#333333",
-            facecolor=fc,
-            transform=ax.transAxes,
-            zorder=2,
-        )
-        ax.add_patch(rect)
-        ax.text(cx, cy, text, ha="center", va="center", fontsize=16, transform=ax.transAxes, zorder=3)
-
-    def _arrow(x0: float, y0: float, x1: float, y1: float, *, dashed: bool = False):
-        ax.annotate(
-            "",
-            xy=(x1, y1),
-            xytext=(x0, y0),
-            xycoords="axes fraction",
-            textcoords="axes fraction",
-            arrowprops=dict(
-                arrowstyle="-|>", color="#333333", lw=1.0,
-                linestyle="--" if dashed else "-",
-                shrinkA=2, shrinkB=2,
-            ),
-            zorder=1,
-        )
-
-    row_main = 0.56
-    row_read = 0.34
-    row_sel = 0.12
-    xs = [0.08, 0.24, 0.40, 0.58, 0.76, 0.92]
-    _box(xs[0], row_main, "Predicted\nTthr_1-5", width=0.12)
-    _box(xs[1], row_main, "Candidate\nUmax grid", width=0.12)
-    _box(xs[2], row_main, "Closed-loop\nODE reinsertion", width=0.14)
-    _box(
-        xs[3], row_main,
-        "Readouts:\nLR, P_AUC,\nterminal pathogen,\ndosage",
-        width=0.15, height=0.14,
-    )
-    _box(xs[4], row_main, "Constraint-first\nscreening", width=0.13)
-    _box(xs[5], row_main, "Optimized Umax\n+ final controller", width=0.14, fc="#FDEEED")
-
-    for x0, x1 in zip(xs[:-1], xs[1:]):
-        _arrow(x0 + 0.065, row_main, x1 - 0.065, row_main)
-
-    _box(0.58, row_sel, "If feasible:\nminimum-dose\nfeasible Umax", width=0.15, height=0.13, fc="#EAF3FB")
-    _box(0.78, row_sel, "If infeasible:\nminimum composite-\npenalty Umax", width=0.16, height=0.13, fc="#EAF3FB")
-    _arrow(xs[4], row_main - 0.07, 0.58, row_sel + 0.08)
-    _arrow(0.66, row_sel, 0.84, row_sel)
-    _arrow(0.86, row_sel + 0.08, xs[5], row_main - 0.08)
-
-    _box(0.18, 0.86, "Training-only\nreferences", width=0.12, height=0.10, fc="#FFFFFF")
-    _box(0.40, 0.86, "Fixed-Umax\npolicies", width=0.12, height=0.10, fc="#FFFFFF")
-    _arrow(0.18, 0.80, xs[1], row_main + 0.07, dashed=True)
-    _arrow(0.40, 0.80, xs[2], row_main + 0.07, dashed=True)
-
-
-def plot_umax_optimizer_schematic(outpath: str) -> None:
-    apply_matplotlib_style()
-    fig, ax = plt.subplots(figsize=(11.5, 2.4))
-    _draw_umax_optimizer_schematic(ax)
-    fig.tight_layout()
-    save_figure(fig, outpath)
-    plt.close(fig)
-
-
-def _prepare_umax_ablation_plot_df(
-    stats_df: pd.DataFrame,
-    *,
-    outdir: Optional[str] = None,
-    conditions_order: Optional[Sequence[str]] = None,
-) -> Tuple[pd.DataFrame, List[str]]:
-    try:
-        from closed_loop_eval import FIG5_ABLATION_CONDITIONS, validate_fig5_main_ablation_conditions
-        order = list(conditions_order or FIG5_ABLATION_CONDITIONS)
-        if conditions_order is None or list(conditions_order) == list(FIG5_ABLATION_CONDITIONS):
-            counts_path = None
-            if outdir:
-                for fname in ("umax_policy_ablation_condition_counts.csv", "umax_ablation_cases.csv"):
-                    candidate = os.path.join(outdir, fname)
-                    if os.path.isfile(candidate):
-                        counts_path = candidate
-                        break
-            if counts_path and counts_path.endswith("umax_ablation_cases.csv"):
-                cases_df = pd.read_csv(counts_path)
-                validate_fig5_main_ablation_conditions(cases_df, context="_prepare_umax_ablation_plot_df")
-            elif counts_path:
-                counts_df = pd.read_csv(counts_path)
-                missing = [c for c in FIG5_ABLATION_CONDITIONS if c not in counts_df["condition"].tolist()]
-                if missing:
-                    raise RuntimeError(
-                        f"_prepare_umax_ablation_plot_df: missing conditions {missing}; "
-                        f"observed {counts_df['condition'].tolist()}"
-                    )
-    except ImportError:
-        order = list(conditions_order or stats_df["model"].tolist())
-    plot_df = _reorder_bar_plot_df(stats_df.copy(), order)
-    available = set(plot_df["model"].tolist())
-    missing_bars = [c for c in order if c not in available]
-    if missing_bars:
-        raise RuntimeError(
-            f"_prepare_umax_ablation_plot_df: missing bar data for conditions {missing_bars}; "
-            f"observed models {sorted(available)}"
-        )
-    return plot_df, order
-
-
-def plot_umax_composite_penalty_ablation(
-    stats_df: pd.DataFrame,
-    outpath: str,
-    *,
-    n_repeats: int = 1,
-    significance_pairs: Optional[object] = None,
-    outdir: Optional[str] = None,
-    panel_letter: Optional[str] = None,
-    horizontal: bool = False,
-) -> None:
-    """Composite-penalty policy ablation."""
-    apply_matplotlib_style()
-    plot_df, _ = _prepare_umax_ablation_plot_df(stats_df, outdir=outdir)
-    if "mean_composite_score" not in plot_df.columns:
-        return
-    label_fn = lambda m: FIG5_ABLATION_SHORT_LABELS.get(m, m)
-    bar_colors = [FIG5_ABLATION_BAR_COLORS.get(m, color_for_model(m)) for m in plot_df["model"].tolist()]
-    figsize = (5.2, 3.6) if horizontal else (4.2, 4.8)
-    fig, ax = plt.subplots(figsize=figsize)
-    significance_pairs_by_metric = significance_pairs if isinstance(significance_pairs, dict) else {}
-    pairs = significance_pairs_by_metric.get("mean_composite_score")
-    _plot_metric_panel_with_ci(
-        ax, plot_df, "mean_composite_score", "Composite penalty",
-        significance_pairs=pairs,
-        focus_ylim=True,
-        display_labels=[label_fn(m) for m in plot_df["model"].tolist()],
-        bar_colors=bar_colors,
-        horizontal=horizontal,
-    )
-    if not horizontal:
-        ax.set_xticklabels([label_fn(m) for m in plot_df["model"]], rotation=30, ha="right", fontsize=18)
-    if panel_letter:
-        _annotate_panel_letter(ax, panel_letter)
-    fig.tight_layout()
-    save_figure(fig, outpath)
-    plt.close(fig)
-
-
-def plot_umax_multi_metric_ablation(
-    stats_df: pd.DataFrame,
-    outpath: str,
-    *,
-    significance_pairs: Optional[object] = None,
-    outdir: Optional[str] = None,
-    panel_letter: Optional[str] = None,
-) -> None:
-    """Multi-metric policy ablation summary (Fig. 5C)."""
-    apply_matplotlib_style()
-    plot_df, _ = _prepare_umax_ablation_plot_df(stats_df, outdir=outdir)
-    label_fn = lambda m: FIG5_ABLATION_SHORT_LABELS.get(m, m)
-    bar_colors = [FIG5_ABLATION_BAR_COLORS.get(m, color_for_model(m)) for m in plot_df["model"].tolist()]
-    metric_specs = [(col, title) for col, title in FIG5_MAIN_METRIC_PANEL_TITLES if col in plot_df.columns]
-    if not metric_specs:
-        return
-    n_panels = len(metric_specs)
-    ncols = 2 if n_panels > 2 else n_panels
-    nrows = int(np.ceil(n_panels / ncols))
-    fig, axes = plt.subplots(nrows, ncols, figsize=(3.5 * ncols, 3.4 * nrows))
-    axes_flat = np.atleast_1d(axes).ravel()
-    significance_pairs_by_metric = significance_pairs if isinstance(significance_pairs, dict) else {}
-    for ax, (col, title) in zip(axes_flat, metric_specs):
-        pairs = significance_pairs_by_metric.get(col)
-        _plot_metric_panel_with_ci(
-            ax, plot_df, col, title,
-            significance_pairs=pairs,
-            focus_ylim=True,
-            baseline_focus_bars=(col == "mean_P_AUC"),
-            significance_bracket_step_scale=1.35,
-            display_labels=[label_fn(m) for m in plot_df["model"].tolist()],
-            bar_colors=bar_colors,
-        )
-        ax.set_title(title, fontsize=20)
-        ax.set_xticklabels([label_fn(m) for m in plot_df["model"]], rotation=35, ha="right", fontsize=16)
-    for ax in axes_flat[len(metric_specs):]:
-        ax.set_visible(False)
-    if panel_letter:
-        _annotate_panel_letter(axes_flat[0], panel_letter)
-    fig.tight_layout()
-    save_figure(fig, outpath)
-    plt.close(fig)
-
-
-def plot_umax_ode_ablation_simplified(
-    trajectories_df: pd.DataFrame,
-    condition_labels: Sequence[str],
-    t_thr_by_condition: Dict[str, np.ndarray],
-    outpath: str,
-    *,
-    display_labels: Optional[Sequence[str]] = None,
-    policy_umax_by_condition: Optional[Dict[str, float]] = None,
-    panel_letter: Optional[str] = None,
-) -> None:
-    """Simplified representative ODE ablation: probiotic + total pathogen burden only."""
-    try:
-        order = _umax_ode_policy_order(condition_labels)
-        required = list(FIG5_ODE_POLICY_ORDER)
-    except Exception:
-        order = list(condition_labels)[:3]
-        required = order
-    missing = [c for c in required if c not in condition_labels]
-    if missing:
-        raise RuntimeError(
-            f"plot_umax_ode_ablation_simplified requires representative conditions {required}; missing {missing}."
-        )
-    apply_matplotlib_style()
-    n_cols = len(order)
-    fig, axes = plt.subplots(2, n_cols, figsize=(4.2 * n_cols, 5.6), sharex=True)
-    if n_cols == 1:
-        axes = np.array(axes).reshape(2, 1)
-    cond_col = "ablation_condition" if "ablation_condition" in trajectories_df.columns else "model"
-    all_times: List[np.ndarray] = []
-
-    label_by_cond = _umax_ode_display_labels_by_condition(condition_labels, display_labels)
-
-    for col, condition in enumerate(order):
-        sub = _first_trajectory_segment(trajectories_df[trajectories_df[cond_col] == condition])
-        if sub.empty:
-            raise RuntimeError(
-                f"plot_umax_ode_ablation_simplified: no trajectory rows for condition '{condition}'."
-            )
-        times = sub["time_h"].to_numpy(dtype=float)
-        all_times.append(times)
-        policy_label = label_by_cond.get(condition, FIG5_ODE_POLICY_SHORT_LABELS.get(condition, condition))
-        title = policy_label
-        axes[0, col].plot(times, sub["P_total_CFU_per_mL"] / 1e6, linewidth=1.8, color=TRAJECTORY_PROBIOTIC)
-        axes[0, col].set_title(title, fontsize=18)
-        if col == 0:
-            axes[0, col].set_ylabel("Probiotic (x1e6 CFU/mL)")
-        pathogen_total = np.zeros_like(times, dtype=float)
-        for i in range(N_ODE_STRAINS):
-            b_col = f"B_total_{i + 1}_CFU_per_mL"
-            if b_col in sub.columns:
-                pathogen_total += sub[b_col].to_numpy(dtype=float)
-        axes[1, col].plot(times, pathogen_total / 1e6, linewidth=1.8, color=PALETTE_RED_MID)
-        axes[1, col].set_xlabel("Time (h)")
-        if col == 0:
-            axes[1, col].set_ylabel("Total pathogen burden (x1e6 CFU/mL)")
-
-    if all_times:
-        x_min = float(min(t[0] for t in all_times))
-        x_max = float(max(t[-1] for t in all_times))
-        for row in range(2):
-            for c in range(n_cols):
-                axes[row, c].set_xlim(x_min, x_max)
-    for row in range(2):
-        ylims = [axes[row, c].get_ylim() for c in range(n_cols)]
-        ymin = min(0.0, *(y[0] for y in ylims))
-        ymax = max(y[1] for y in ylims)
-        for c in range(n_cols):
-            axes[row, c].set_ylim(ymin, ymax * 1.03)
-    if panel_letter:
-        _annotate_panel_letter(axes[0, 0], panel_letter)
-    fig.tight_layout()
-    save_figure(fig, outpath)
-    plt.close(fig)
-
-
-def assemble_fig5_umax_main(
-    *,
-    outpath: str,
-    stats_df: Optional[pd.DataFrame] = None,
-    trajectories_df: Optional[pd.DataFrame] = None,
-    t_thr_by_condition: Optional[Dict[str, np.ndarray]] = None,
-    conditions: Optional[Sequence[str]] = None,
-    display_labels: Optional[Sequence[str]] = None,
-    significance_pairs: Optional[object] = None,
-    outdir: Optional[str] = None,
-    include_ode_panel: bool = True,
-) -> Dict[str, bool]:
-    """Assemble manuscript Fig. 5 composite (panels A–D)."""
-    apply_matplotlib_style()
-    panel_included = {"A": True, "B": False, "C": False, "D": False}
-    has_stats = stats_df is not None and not stats_df.empty
-    has_traj = (
-        include_ode_panel
-        and trajectories_df is not None
-        and not trajectories_df.empty
-        and conditions
-        and t_thr_by_condition is not None
-    )
-    n_rows = 4 if has_traj else 3
-    height_ratios = [0.85, 1.55, 1.75, 1.25] if has_traj else [0.85, 1.55, 1.75]
-    fig = plt.figure(figsize=(13.5, 4.2 * n_rows))
-    gs = gridspec.GridSpec(n_rows, 6, figure=fig, height_ratios=height_ratios, hspace=0.42, wspace=0.38)
-
-    ax_a = fig.add_subplot(gs[0, :])
-    _draw_umax_optimizer_schematic(ax_a)
-    _annotate_panel_letter(ax_a, "A", x=0.01, y=0.98)
-
-    ax_b = fig.add_subplot(gs[1, :2])
-    if has_stats and "mean_composite_score" in stats_df.columns:
-        plot_df, _ = _prepare_umax_ablation_plot_df(stats_df, outdir=outdir)
-        label_fn = lambda m: FIG5_ABLATION_SHORT_LABELS.get(m, m)
-        bar_colors = [FIG5_ABLATION_BAR_COLORS.get(m, color_for_model(m)) for m in plot_df["model"].tolist()]
-        significance_pairs_by_metric = significance_pairs if isinstance(significance_pairs, dict) else {}
-        pairs = significance_pairs_by_metric.get("mean_composite_score")
-        _plot_metric_panel_with_ci(
-            ax_b, plot_df, "mean_composite_score", "Composite penalty",
-            significance_pairs=pairs,
-            focus_ylim=True,
-            display_labels=[label_fn(m) for m in plot_df["model"].tolist()],
-            bar_colors=bar_colors,
-        )
-        ax_b.set_xticklabels([label_fn(m) for m in plot_df["model"]], rotation=30, ha="right", fontsize=18)
-        panel_included["B"] = True
-    else:
-        ax_b.axis("off")
-    _annotate_panel_letter(ax_b, "B")
-
-    gs_c = gs[1, 2:].subgridspec(2, 2, wspace=0.35, hspace=0.45)
-    metric_specs = []
-    if has_stats:
-        metric_specs = [(col, title) for col, title in FIG5_MAIN_METRIC_PANEL_TITLES if col in stats_df.columns]
-    c_axes = [fig.add_subplot(gs_c[i, j]) for i in range(2) for j in range(2)]
-    if metric_specs:
-        plot_df, _ = _prepare_umax_ablation_plot_df(stats_df, outdir=outdir)
-        label_fn = lambda m: FIG5_ABLATION_SHORT_LABELS.get(m, m)
-        bar_colors = [FIG5_ABLATION_BAR_COLORS.get(m, color_for_model(m)) for m in plot_df["model"].tolist()]
-        significance_pairs_by_metric = significance_pairs if isinstance(significance_pairs, dict) else {}
-        for ax, (col, title) in zip(c_axes, metric_specs):
-            pairs = significance_pairs_by_metric.get(col)
-            _plot_metric_panel_with_ci(
-                ax, plot_df, col, title,
-                significance_pairs=pairs,
-                focus_ylim=True,
-                baseline_focus_bars=(col == "mean_P_AUC"),
-                significance_bracket_step_scale=1.35,
-                display_labels=[label_fn(m) for m in plot_df["model"].tolist()],
-                bar_colors=bar_colors,
-            )
-            ax.set_title(title, fontsize=20)
-            ax.set_xticklabels([label_fn(m) for m in plot_df["model"]], rotation=35, ha="right", fontsize=16)
-        panel_included["C"] = True
-    for ax in c_axes[len(metric_specs):]:
-        ax.set_visible(False)
-    if metric_specs:
-        _annotate_panel_letter(c_axes[0], "C")
-
-    if has_traj:
-        order = _umax_ode_policy_order(conditions or [])
-        label_by_cond = _umax_ode_display_labels_by_condition(conditions or [], display_labels)
-        gs_d = gs[3, :].subgridspec(2, len(order), wspace=0.28, hspace=0.32)
-        d_axes = np.array([[fig.add_subplot(gs_d[r, c]) for c in range(len(order))] for r in range(2)])
-        cond_col = "ablation_condition" if "ablation_condition" in trajectories_df.columns else "model"
-        all_times: List[np.ndarray] = []
-        for col_idx, condition in enumerate(order):
-            sub = _first_trajectory_segment(trajectories_df[trajectories_df[cond_col] == condition])
-            if sub.empty:
-                continue
-            times = sub["time_h"].to_numpy(dtype=float)
-            all_times.append(times)
-            policy_label = label_by_cond.get(condition, FIG5_ODE_POLICY_SHORT_LABELS.get(condition, condition))
-            title = policy_label
-            d_axes[0, col_idx].plot(times, sub["P_total_CFU_per_mL"] / 1e6, linewidth=1.8, color=TRAJECTORY_PROBIOTIC)
-            d_axes[0, col_idx].set_title(title, fontsize=18)
-            if col_idx == 0:
-                d_axes[0, col_idx].set_ylabel("Probiotic (x1e6 CFU/mL)")
-            pathogen_total = np.zeros_like(times, dtype=float)
-            for i in range(N_ODE_STRAINS):
-                b_col = f"B_total_{i + 1}_CFU_per_mL"
-                if b_col in sub.columns:
-                    pathogen_total += sub[b_col].to_numpy(dtype=float)
-            d_axes[1, col_idx].plot(times, pathogen_total / 1e6, linewidth=1.8, color=PALETTE_RED_MID)
-            d_axes[1, col_idx].set_xlabel("Time (h)")
-            if col_idx == 0:
-                d_axes[1, col_idx].set_ylabel("Total pathogen burden (x1e6 CFU/mL)")
-        if all_times:
-            x_min = float(min(t[0] for t in all_times))
-            x_max = float(max(t[-1] for t in all_times))
-            for row in range(2):
-                for c in range(len(order)):
-                    d_axes[row, c].set_xlim(x_min, x_max)
-            for row in range(2):
-                ylims = [d_axes[row, c].get_ylim() for c in range(len(order))]
-                ymin = min(0.0, *(y[0] for y in ylims))
-                ymax = max(y[1] for y in ylims)
-                for c in range(len(order)):
-                    d_axes[row, c].set_ylim(ymin, ymax * 1.03)
-            panel_included["D"] = True
-            _annotate_panel_letter(d_axes[0, 0], "D")
-
-    fig.subplots_adjust(left=0.06, right=0.98, top=0.98, bottom=0.05)
-    save_figure(fig, outpath)
-    plt.close(fig)
-    return panel_included
-
-
 def plot_umax_response_landscape(
     landscape_df: pd.DataFrame,
     outpath: str,
@@ -2989,11 +2592,10 @@ def plot_umax_response_landscape(
 
     x = summary["candidate_u_max"].to_numpy(dtype=float)
     ax.plot(x, summary["median"], color=PALETTE_BLUE_MID, linewidth=2.8, zorder=4, label="Median penalty")
-    if "q25" in summary.columns and "q75" in summary.columns:
-        ax.fill_between(
-            x, summary["q25"], summary["q75"],
-            color=PALETTE_BLUE_LIGHT, alpha=0.28, zorder=3, label="IQR",
-        )
+    ax.fill_between(
+        x, summary["q25"], summary["q75"],
+        color=PALETTE_BLUE_LIGHT, alpha=0.28, zorder=3, label="IQR",
+    )
     if {"q10", "q90"}.issubset(summary.columns):
         ax.fill_between(
             x, summary["q10"], summary["q90"],
@@ -3003,21 +2605,20 @@ def plot_umax_response_landscape(
     selected_u = _extract_selected_umax_values(rug_source if isinstance(rug_source, pd.DataFrame) else work)
     if selected_u.size:
         median_selected = float(np.median(selected_u))
-        q25_sel = float(np.quantile(selected_u, 0.25))
-        q75_sel = float(np.quantile(selected_u, 0.75))
         ax.axvline(
             median_selected, color=PALETTE_RED_MID, linestyle="--", linewidth=1.6,
-            zorder=5, alpha=0.85, label="Median score-minimum Umax",
+            zorder=5, alpha=0.85, label="Selected Umax",
         )
-        if q75_sel > q25_sel:
-            ax.axvspan(q25_sel, q75_sel, color=PALETTE_RED_MID, alpha=0.08, zorder=2, label="Score-minimum Umax IQR")
         y0, y1 = ax.get_ylim()
         yspan = y1 - y0 + 1e-9
         rug_y = y0 + 0.015 * yspan
         ax.scatter(
             selected_u, np.full(selected_u.size, rug_y),
             marker="|", s=36, color=PALETTE_RED_MID, alpha=0.30, linewidths=0.8, zorder=6,
-            label="Case-level score-minimum Umax",
+        )
+        ax.text(
+            0.02, 0.05, f"median selected $U_{{max}}$ = {median_selected:.1f}",
+            transform=ax.transAxes, ha="left", va="bottom", fontsize=FS_ANNOT, color=PALETTE_RED_MID,
         )
         if selected_umax_csv and isinstance(rug_source, pd.DataFrame):
             sel_flag = None
@@ -3034,15 +2635,16 @@ def plot_umax_response_landscape(
                 if export_cols and not sel_df.empty:
                     sel_df[export_cols].drop_duplicates().to_csv(selected_umax_csv, index=False)
 
-    ax.set_title("Score-minimum Umax landscape")
-    ax.set_xlabel("Umax")
-    ax.set_ylabel("Composite penalty")
+    ax.set_title("Umax-response landscape", fontsize=FS_TRAJECTORY_TITLE, pad=6)
+    ax.set_xlabel(r"$U_{max}$", fontsize=FS_BASE + 1)
+    ax.set_ylabel("Composite penalty", fontsize=FS_BASE + 1)
+    ax.tick_params(axis="both", labelsize=FS_TICK + 1)
     ax.set_xlim(left=0)
     ax.grid(axis="both", linestyle="--", alpha=0.3)
     handles, labels = ax.get_legend_handles_labels()
     if handles:
-        ax.legend(handles, labels, loc="upper right", fontsize=16, frameon=False)
-    fig.tight_layout()
+        ax.legend(handles, labels, loc="upper right", fontsize=FS_LEGEND + 1, frameon=False)
+    finalize_figure_layout(fig)
     save_figure(fig, outpath)
     plt.close(fig)
 
@@ -3053,7 +2655,7 @@ def plot_umax_constraint_feasibility(
     *,
     selected_umax_values: Optional[np.ndarray] = None,
 ) -> None:
-    """Supplementary: fraction of cases satisfying each constraint across candidate Umax."""
+    """Fig. 5B: fraction of cases satisfying each constraint across candidate Umax."""
     apply_matplotlib_style()
     work = _filter_tar_optimized_landscape(_ensure_umax_unit_id(landscape_df.copy()))
     if work.empty or "candidate_u_max" not in work.columns:
@@ -3069,40 +2671,34 @@ def plot_umax_constraint_feasibility(
     fig, ax = plt.subplots(figsize=(8.8, 5.2))
     x = summary["candidate_u_max"].to_numpy(dtype=float)
     line_specs = [
-        ("lr_fraction", "LR constraint", PALETTE_BLUE_MID),
-        ("pauc_fraction", "P_AUC constraint", PALETTE_GREEN_MID),
-        ("pathogen_fraction", "Terminal burden constraint", PALETTE_BLUE_LIGHT),
-        ("all_fraction", "All constraints", "#888888"),
+        ("lr_fraction", "LR", PALETTE_BLUE_MID),
+        ("pauc_fraction", r"$P_{AUC}$", PALETTE_GREEN_MID),
+        ("pathogen_fraction", "pathogen", PALETTE_BLUE_LIGHT),
+        ("all_fraction", "all constraints", PALETTE_RED_MID),
     ]
     for col, label, color in line_specs:
-        if col not in summary.columns:
-            continue
-        linestyle = (0, (4, 3)) if col == "all_fraction" else "-"
-        linewidth = 1.8 if col == "all_fraction" else 2.2
-        ax.plot(x, summary[col], linewidth=linewidth, color=color, label=label, linestyle=linestyle, zorder=3)
+        if col in summary.columns:
+            ax.plot(x, summary[col], linewidth=2.2, color=color, label=label, zorder=3)
 
     if selected_umax_values is not None and selected_umax_values.size:
         median_selected = float(np.median(selected_umax_values))
         ax.axvline(
             median_selected, color=PALETTE_RED_MID, linestyle="--", linewidth=1.6, alpha=0.85, zorder=4,
-            label="Median score-minimum Umax",
         )
         q25_sel = float(np.quantile(selected_umax_values, 0.25))
         q75_sel = float(np.quantile(selected_umax_values, 0.75))
         if q75_sel > q25_sel:
-            ax.axvspan(
-                q25_sel, q75_sel, color=PALETTE_RED_MID, alpha=0.08, zorder=1,
-                label="Score-minimum Umax IQR",
-            )
+            ax.axvspan(q25_sel, q75_sel, color=PALETTE_RED_MID, alpha=0.08, zorder=1)
 
-    ax.set_title("Individual constraint satisfaction across Umax")
-    ax.set_xlabel("Umax")
-    ax.set_ylabel("Fraction of validation cases satisfying constraint")
+    ax.set_title("Constraint feasibility across Umax", fontsize=FS_TRAJECTORY_TITLE, pad=6)
+    ax.set_xlabel(r"$U_{max}$", fontsize=FS_BASE + 1)
+    ax.set_ylabel("Fraction of cases satisfying constraint", fontsize=FS_BASE + 1)
+    ax.tick_params(axis="both", labelsize=FS_TICK + 1)
     ax.set_xlim(left=0)
     ax.set_ylim(0.0, 1.0)
     ax.grid(axis="both", linestyle="--", alpha=0.3)
-    ax.legend(loc="lower right", fontsize=16, frameon=False)
-    fig.tight_layout()
+    ax.legend(loc="lower right", fontsize=FS_LEGEND + 1, frameon=False)
+    finalize_figure_layout(fig)
     save_figure(fig, outpath)
     plt.close(fig)
 
@@ -3227,8 +2823,8 @@ def plot_umax_score_landscape(
     ax.grid(axis="both", linestyle="--", alpha=0.3)
     handles, labels = ax.get_legend_handles_labels()
     if handles:
-        ax.legend(handles, labels, loc="upper right", fontsize=16, frameon=False)
-    fig.tight_layout()
+        ax.legend(handles, labels, loc="upper right", fontsize=FS_LEGEND, frameon=False)
+    finalize_figure_layout(fig)
     save_figure(fig, outpath)
     plt.close(fig)
 
@@ -3388,11 +2984,13 @@ def plot_umax_score_components_landscape(
             [f"{label} Umax={u:.1f}" for u, label in vlines],
             loc="upper center",
             ncol=min(len(vlines), 3),
-            fontsize=16,
+            fontsize=FS_LEGEND,
             frameon=False,
-            bbox_to_anchor=(0.5, 1.02),
+            bbox_to_anchor=(0.5, 0.98),
         )
-    fig.tight_layout()
+        finalize_figure_layout(fig, rect=(0.0, 0.04, 1.0, 0.92))
+    else:
+        finalize_figure_layout(fig)
     save_figure(fig, outpath)
     plt.close(fig)
 
@@ -3573,9 +3171,10 @@ def plot_umax_ode_ablation(
 ) -> None:
     """Fig. 5C: TAR training-median / training-tuned global / optimized illustrative trajectories."""
     try:
-        order = _umax_ode_policy_order(condition_labels)
-        required = list(FIG5_ODE_POLICY_ORDER)
-    except Exception:
+        from closed_loop_eval import FIG5_REPRESENTATIVE_CONDITIONS
+        order = [c for c in FIG5_REPRESENTATIVE_CONDITIONS if c in condition_labels]
+        required = list(FIG5_REPRESENTATIVE_CONDITIONS)
+    except ImportError:
         order = list(condition_labels)[:3]
         required = order
     missing = [c for c in required if c not in condition_labels]
@@ -3593,7 +3192,6 @@ def plot_umax_ode_ablation(
     legend_labels = None
     cond_col = "ablation_condition" if "ablation_condition" in trajectories_df.columns else "model"
     all_times: List[np.ndarray] = []
-    label_by_cond = _umax_ode_display_labels_by_condition(condition_labels, display_labels)
 
     for col, condition in enumerate(order):
         sub = _first_trajectory_segment(trajectories_df[trajectories_df[cond_col] == condition])
@@ -3604,17 +3202,20 @@ def plot_umax_ode_ablation(
         times = sub["time_h"].to_numpy(dtype=float)
         all_times.append(times)
         t_thr = np.asarray(t_thr_by_condition[condition], dtype=float)
-        policy_label = label_by_cond.get(condition, FIG5_ODE_POLICY_SHORT_LABELS.get(condition, condition))
-        title_parts = [policy_label]
-        umax_val = (policy_umax_by_condition or {}).get(condition)
-        dose_val = (total_dosage_by_condition or {}).get(condition)
-        if umax_val is not None and np.isfinite(umax_val):
-            title_parts.append(f"Umax={umax_val:.1f}")
-        if dose_val is not None and np.isfinite(dose_val):
-            title_parts.append(f"dosage={dose_val:.0f}")
-        title = "\n".join(title_parts)
+        if display_labels is not None and col < len(display_labels):
+            title = display_labels[col]
+        else:
+            policy_label = FIG5_ODE_POLICY_SHORT_LABELS.get(condition, _umax_ablation_display_label(condition))
+            title_parts = [policy_label]
+            umax_val = (policy_umax_by_condition or {}).get(condition)
+            dose_val = (total_dosage_by_condition or {}).get(condition)
+            if umax_val is not None and np.isfinite(umax_val):
+                title_parts.append(f"$U_{{max}}$={umax_val:.1f}")
+            if dose_val is not None and np.isfinite(dose_val):
+                title_parts.append(f"dosage={dose_val:.0f}")
+            title = "\n".join(title_parts)
         axes[0, col].plot(times, sub["C_ug_per_mL"], linewidth=1.8, color=TRAJECTORY_AMP)
-        axes[0, col].set_title(title, fontsize=20)
+        axes[0, col].set_title(title, fontsize=FS_PANEL, pad=10)
         if col == 0:
             axes[0, col].set_ylabel(r"AMP ($\mu$g/mL)")
         axes[1, col].plot(times, sub["P_total_CFU_per_mL"] / 1e6, linewidth=1.8, color=TRAJECTORY_PROBIOTIC)
@@ -3635,7 +3236,7 @@ def plot_umax_ode_ablation(
             axes[2, col].set_ylabel(r"Pathogen burden ($\times10^6$ CFU/mL)")
             legend_handles, legend_labels = axes[2, col].get_legend_handles_labels()
     if legend_handles and legend_labels:
-        fig.legend(legend_handles, legend_labels, ncol=5, fontsize=16, frameon=True, loc="lower center", bbox_to_anchor=(0.5, -0.02))
+        pass  # placed after shared y-limits below
     if all_times:
         x_min = float(min(t[0] for t in all_times))
         x_max = float(max(t[-1] for t in all_times))
@@ -3648,7 +3249,15 @@ def plot_umax_ode_ablation(
         ymax = max(y[1] for y in ylims)
         for c in range(n_cols):
             axes[row, c].set_ylim(ymin, ymax * 1.03)
-    fig.tight_layout()
+    if legend_handles and legend_labels:
+        place_figure_legend_below(fig, legend_handles, legend_labels, ncol=5, y=-0.01, bottom_rect=0.10)
+    else:
+        finalize_figure_layout(fig, rect=(0.0, 0.06, 1.0, 0.98))
+    fig.text(
+        0.99, 0.99, "representative case",
+        ha="right", va="top", fontsize=FS_NOTE, alpha=0.55, style="italic",
+        transform=fig.transFigure,
+    )
     save_figure(fig, outpath)
     plt.close(fig)
 
@@ -3663,6 +3272,7 @@ def plot_umax_summary_ablation(
     conditions_order: Optional[Sequence[str]] = None,
     metric_specs: Optional[Sequence[Tuple[str, str]]] = None,
     use_short_labels: bool = False,
+    horizontal_bars: bool = False,
 ) -> None:
     """Fig. 5D: repeated ablation summary (TAR policy comparison)."""
     try:
@@ -3724,7 +3334,11 @@ def plot_umax_summary_ablation(
         else None
     )
     n_panels = sum(1 for col, _ in metric_specs if col in plot_df.columns)
-    fig, axes = plt.subplots(1, max(n_panels, 1), figsize=(3.4 * max(n_panels, 1), 5.2))
+    if horizontal_bars:
+        n_bars = len(plot_df)
+        fig, axes = plt.subplots(1, max(n_panels, 1), figsize=(7.2, 1.35 * n_bars + 1.2))
+    else:
+        fig, axes = plt.subplots(1, max(n_panels, 1), figsize=(3.4 * max(n_panels, 1), 5.2))
     if n_panels == 1:
         axes = np.array([axes])
     significance_pairs_by_metric = significance_pairs if isinstance(significance_pairs, dict) else {}
@@ -3743,14 +3357,21 @@ def plot_umax_summary_ablation(
             significance_bracket_step_scale=1.35,
             display_labels=[label_fn(m) for m in plot_df["model"].tolist()],
             bar_colors=bar_colors,
+            horizontal=horizontal_bars,
+            horizontal_bar_height=0.92,
         )
-        ax.set_xticklabels(
-            [label_fn(m) for m in plot_df["model"]],
-            rotation=25, ha="right", fontsize=16,
-        )
+        if not horizontal_bars:
+            ax.set_xticklabels(
+                [label_fn(m) for m in plot_df["model"]],
+                rotation=25, ha="right", fontsize=FS_TICK_SM,
+            )
+            ax.tick_params(axis="x", pad=5)
     for ax in axes[panel_idx:]:
         ax.set_visible(False)
-    fig.tight_layout()
+    if horizontal_bars:
+        finalize_figure_layout(fig, rect=(0.02, 0.06, 0.98, 0.98))
+    else:
+        finalize_figure_layout(fig, rect=(0.0, 0.14, 1.0, 1.0))
     save_figure(fig, outpath)
     plt.close(fig)
 
@@ -3758,8 +3379,6 @@ def plot_umax_summary_ablation(
 def build_fig5_plot_manifest(
     *,
     primary_outputs: Dict[str, str],
-    supplementary_outputs: Dict[str, str],
-    panels_included: Dict[str, bool],
     n_repeats: int,
     significance_for_manuscript: bool,
     prediction_sources: Optional[Sequence[str]] = None,
@@ -3769,96 +3388,45 @@ def build_fig5_plot_manifest(
         if significance_for_manuscript
         else "exploratory_no_formal_stars_n_repeats_lt_10"
     )
-    main_input_sources = {
-        "panel_schematic": [],
-        "panel_composite_penalty": [
-            "umax_ablation_repeated_plot_stats.csv",
-            "umax_ablation_significance_annotations.csv",
-        ],
-        "panel_multi_metric": [
-            "umax_ablation_repeated_plot_stats.csv",
-            "umax_ablation_significance_annotations.csv",
-        ],
-        "panel_ode_simplified": [
-            "umax_ablation_representative_trajectories.csv",
-            FIG5_PLOT_MANIFEST_JSON,
-        ],
-    }
-    supplementary_input_sources = {
-        "umax_constraint_satisfaction": [
-            "umax_response_landscape.csv",
-            "umax_optimization_u_candidates.csv",
-        ],
-        "umax_score_minimum_landscape": [
-            "umax_response_landscape.csv",
-            "umax_selected_umax_distribution.csv",
-            "umax_score_landscape_curves.csv",
-        ],
-        "umax_score_components": ["umax_optimization_u_candidates.csv"],
-        "umax_ode_ablation_full": [
-            "umax_ablation_representative_trajectories.csv",
-            FIG5_PLOT_MANIFEST_JSON,
-        ],
-        FIG5_COMPOSITE_SUPPLEMENTARY_BASENAME: [
-            "umax_ablation_repeated_plot_stats.csv",
-        ],
-    }
-    panel_mapping = []
-    for panel, panel_id, desc in FIG5_MAIN_PANEL_ORDER:
-        panel_mapping.append({
-            **_fig_panel_record(
-                panel, f"{FIG5_MAIN_BASENAME}.png", desc,
-                role="primary_manuscript_figure",
-                input_sources=main_input_sources.get(panel_id, []),
-                n_repeats=n_repeats,
-                umax_setting={
-                    "panel_schematic": "post_prediction_umax_optimizer_schematic",
-                    "panel_composite_penalty": "tar_only_policy_ablation_composite_penalty",
-                    "panel_multi_metric": "tar_only_policy_ablation_three_conditions",
-                    "panel_ode_simplified": "tar_policy_representative_trajectories_simplified",
-                }.get(panel_id, "optimized_and_fixed_ablation"),
-                significance_mode=sig_mode if panel_id in ("panel_composite_penalty", "panel_multi_metric") else "none",
-            ),
-            "panel_id": panel_id,
-            "figure_tier": "main",
-            "included": bool(panels_included.get(panel, True)),
-        })
-    for basename in FIG5_ALL_SUPPLEMENTARY_BASENAMES:
-        desc_map = {
-            "umax_constraint_satisfaction": "Individual constraint satisfaction across Umax",
-            "umax_score_minimum_landscape": "Score-minimum Umax landscape",
-            "umax_score_components": "Score-component decomposition across Umax",
-            "umax_ode_ablation_full": "Full representative ODE ablation trajectories",
-            FIG5_COMPOSITE_SUPPLEMENTARY_BASENAME: "Composite penalty policy ablation (horizontal)",
-        }
-        panel_mapping.append({
-            "panel": None,
-            "description": desc_map.get(basename, basename),
-            "role": "supplementary_diagnostic_figure",
-            "filename": f"{basename}.png",
-            "input_sources": supplementary_input_sources.get(basename, []),
-            "n_repeats": int(n_repeats),
-            "umax_setting": basename,
-            "significance_mode": "none",
-            "figure_tier": "supplementary",
-            "included": basename in supplementary_outputs or f"{basename}.png" in supplementary_outputs,
-        })
+    panel_mapping = [
+        _fig_panel_record(
+            panel, filename, desc,
+            role="primary_manuscript_figure",
+            input_sources={
+                "umax_score_landscape.png": [
+                    "umax_response_landscape.csv",
+                    "umax_selected_umax_distribution.csv",
+                    "umax_score_landscape_curves.csv",
+                ],
+                "umax_constraint_feasibility.png": [
+                    "umax_response_landscape.csv",
+                    "umax_optimization_u_candidates.csv",
+                ],
+                "umax_ode_ablation.png": ["umax_ablation_representative_trajectories.csv", FIG5_PLOT_MANIFEST_JSON],
+                "umax_summary_ablation.png": [
+                    "umax_ablation_repeated_plot_stats.csv",
+                    "umax_ablation_significance_annotations.csv",
+                ],
+            }.get(filename, []),
+            n_repeats=n_repeats,
+            umax_setting={
+                "umax_score_landscape.png": "tar_optimized_response_landscape",
+                "umax_constraint_feasibility.png": "constraint_feasibility_fraction_by_u",
+                "umax_ode_ablation.png": "tar_policy_representative_trajectories",
+                "umax_summary_ablation.png": "tar_only_policy_ablation_three_conditions",
+            }.get(filename, "optimized_and_fixed_ablation"),
+            significance_mode="none" if filename != "umax_summary_ablation.png" else sig_mode,
+        )
+        for panel, filename, desc in FIG5_PANEL_ORDER
+    ]
     return {
         "figure": "Fig. 5",
-        "figure_title": "Post-prediction Umax optimization",
+        "figure_title": "Umax optimization analysis",
         "validation_section": "Umax optimization analysis",
-        "interpretation": (
-            "TAR predicts Tthr only. Umax is selected after prediction by closed-loop ODE grid "
-            "reinsertion. The optimizer selects a multi-objective compromise that lowers composite "
-            "penalty versus training-only fixed-Umax controls while individual metrics trade off."
-        ),
         "prediction_input_sources": list(prediction_sources or []),
         "primary_outputs": {k: primary_outputs[k] for k in FIG5_PRIMARY_FIGURES if k in primary_outputs},
-        "supplementary_outputs": dict(supplementary_outputs),
         "figure_panel_mapping": panel_mapping,
         "fig5_primary_figures": list(FIG5_PRIMARY_FIGURES),
-        "fig5_supplementary_figures": [f"{b}.png" for b in FIG5_ALL_SUPPLEMENTARY_BASENAMES],
-        "panels_included": dict(panels_included),
         "optimizer_score_rule": (
             "One-sided optimization_penalty_score (>= 0); signed_relative_rms is diagnostic only."
         ),
@@ -3874,11 +3442,9 @@ build_umax_optimization_plot_manifest = build_fig5_plot_manifest
 
 
 def generate_umax_optimization_plots(outdir: str) -> Dict[str, str]:
-    """Regenerate Fig. 5 main composite and supplementary Umax optimization figures."""
+    """Regenerate Fig. 5 Umax optimization justification panels."""
     figure_dir = _ensure_figure_dir(outdir)
-    _cleanup_legacy_umax_figures(figure_dir)
     manifest_path = os.path.join(outdir, UMAX_OPTIMIZATION_MANIFEST_JSON)
-    plot_manifest_path = os.path.join(outdir, FIG5_PLOT_MANIFEST_JSON)
     cl_manifest: dict = {}
     if os.path.exists(manifest_path):
         with open(manifest_path, encoding="utf-8") as fh:
@@ -3886,107 +3452,88 @@ def generate_umax_optimization_plots(outdir: str) -> Dict[str, str]:
     n_repeats = int(cl_manifest.get("n_repeats", 1))
     outputs: Dict[str, str] = {}
     primary_outputs: Dict[str, str] = {}
-    supplementary_outputs: Dict[str, str] = {}
     sampled_units = _sample_umax_unit_ids_from_outdir(outdir, max_units=30, seed=42)
-
-    significance_for_manuscript = bool(
-        n_repeats >= 10 and cl_manifest.get("significance_for_manuscript", n_repeats >= 10)
-    )
-    stats_df: Optional[pd.DataFrame] = None
-    annotations_df: Optional[pd.DataFrame] = None
-    sig_pairs: Dict[str, List[Tuple[str, str, str]]] = {}
-    stats_path = os.path.join(outdir, "umax_ablation_repeated_plot_stats.csv")
-    if os.path.exists(stats_path):
-        stats_df = pd.read_csv(stats_path)
-        annotations_df = _read_optional_csv(outdir, "umax_ablation_significance_annotations.csv")
-        main_metric_names = [m for m, _ in FIG5_MAIN_METRIC_PANEL_TITLES]
-        if "mean_composite_score" not in main_metric_names:
-            main_metric_names = main_metric_names + ["mean_composite_score"]
-        try:
-            from closed_loop_eval import FIG5_SIGNIFICANCE_REFERENCE
-            if significance_for_manuscript:
-                for metric in main_metric_names:
-                    pairs = closed_loop_significance_pairs_for_plot(
-                        annotations_df, FIG5_SIGNIFICANCE_REFERENCE, metric=metric
-                    )
-                    if pairs:
-                        sig_pairs[metric] = pairs
-        except ImportError:
-            sig_pairs = {}
-        composite_supp_png = os.path.join(figure_dir, f"{FIG5_COMPOSITE_SUPPLEMENTARY_BASENAME}.png")
-        if "mean_composite_score" in stats_df.columns:
-            print("[Fig.5] Plotting composite penalty supplementary (horizontal) ...", flush=True)
-            plot_umax_composite_penalty_ablation(
-                stats_df, composite_supp_png, outdir=outdir, horizontal=True,
-            )
-            supplementary_outputs[f"{FIG5_COMPOSITE_SUPPLEMENTARY_BASENAME}.png"] = composite_supp_png
-            outputs[f"{FIG5_COMPOSITE_SUPPLEMENTARY_BASENAME}.png"] = composite_supp_png
 
     landscape_df, landscape_source = _load_umax_landscape_for_fig5(
         outdir, max_background_cases=30, sampled_units=sampled_units,
     )
     if not landscape_df.empty:
         print(
-            f"[Fig.5] Plotting score-minimum Umax landscape from {landscape_source} "
+            f"[Fig.5] Plotting umax_score_landscape from {landscape_source} "
             f"({len(landscape_df)} background rows) ...",
             flush=True,
         )
-        landscape_png = os.path.join(figure_dir, "umax_score_minimum_landscape.png")
+        landscape_png = os.path.join(figure_dir, "umax_score_landscape.png")
         selected_csv = os.path.join(outdir, "umax_selected_umax_distribution.csv")
         plot_umax_response_landscape(
             landscape_df, landscape_png, selected_umax_csv=selected_csv, max_background_cases=30,
         )
-        supplementary_outputs["umax_score_minimum_landscape.png"] = landscape_png
-        outputs["umax_score_minimum_landscape.png"] = landscape_png
+        primary_outputs["umax_score_landscape.png"] = landscape_png
+        outputs["umax_score_landscape.png"] = landscape_png
+        if landscape_source == "curves":
+            full_landscape_png = os.path.join(figure_dir, "umax_score_landscape_full_spaghetti.png")
+            plot_umax_score_landscape_full_spaghetti(landscape_df, full_landscape_png)
+            outputs["umax_score_landscape_full_spaghetti.png"] = full_landscape_png
 
     feasibility_df = _load_umax_feasibility_df_full(outdir, landscape_source)
     if not feasibility_df.empty:
-        print(f"[Fig.5] Plotting constraint satisfaction ({len(feasibility_df)} rows) ...", flush=True)
+        print(f"[Fig.5] Plotting umax_constraint_feasibility ({len(feasibility_df)} rows) ...", flush=True)
         selected_u = _extract_selected_umax_values(feasibility_df)
-        constraint_png = os.path.join(figure_dir, "umax_constraint_satisfaction.png")
+        constraint_png = os.path.join(figure_dir, "umax_constraint_feasibility.png")
         plot_umax_constraint_feasibility(
             feasibility_df, constraint_png, selected_umax_values=selected_u,
         )
-        supplementary_outputs["umax_constraint_satisfaction.png"] = constraint_png
-        outputs["umax_constraint_satisfaction.png"] = constraint_png
+        primary_outputs["umax_constraint_feasibility.png"] = constraint_png
+        outputs["umax_constraint_feasibility.png"] = constraint_png
 
     candidates_path = os.path.join(outdir, "umax_optimization_u_candidates.csv")
     if os.path.exists(candidates_path):
         print(f"[Fig.5] Loading U candidates from {candidates_path} ...", flush=True)
         candidates_df = _load_umax_candidates_csv_for_plot(candidates_path, sampled_units=sampled_units)
-        print(f"[Fig.5] Plotting supplementary score components ({len(candidates_df)} rows) ...", flush=True)
+        print(f"[Fig.5] Plotting score components ({len(candidates_df)} background rows) ...", flush=True)
         policy_path = os.path.join(outdir, "fixed_umax_policy_by_repeat.csv")
         fixed_policy_df = pd.read_csv(policy_path) if os.path.exists(policy_path) else None
         cases_path = os.path.join(outdir, "umax_policy_ablation_cases.csv")
         if not os.path.exists(cases_path):
             cases_path = os.path.join(outdir, "umax_ablation_cases.csv")
         optimized_cases_df = pd.read_csv(cases_path) if os.path.exists(cases_path) else None
-        components_png = os.path.join(figure_dir, "umax_score_components.png")
+        components_png = os.path.join(figure_dir, "umax_score_components_landscape.png")
         plot_umax_score_components_landscape(
             candidates_df,
             components_png,
             fixed_policy_df=fixed_policy_df,
             optimized_cases_df=optimized_cases_df,
         )
-        supplementary_outputs["umax_score_components.png"] = components_png
-        outputs["umax_score_components.png"] = components_png
+        outputs["umax_score_components_landscape.png"] = components_png
 
-    traj_df: Optional[pd.DataFrame] = None
-    conditions: List[str] = []
-    t_thr_by_condition: Dict[str, np.ndarray] = {}
-    plot_display_labels: Optional[Sequence[str]] = None
-    traj_path = os.path.join(outdir, "umax_ablation_representative_trajectories.csv")
-    plot_manifest: dict = {}
-    if os.path.exists(plot_manifest_path):
-        with open(plot_manifest_path, encoding="utf-8") as fh:
-            plot_manifest = json.load(fh)
-    if os.path.exists(traj_path):
-        print("[Fig.5] Plotting supplementary full ODE ablation ...", flush=True)
-        traj_df = pd.read_csv(traj_path)
-        conditions = list(
-            plot_manifest.get("plot_conditions")
-            or traj_df.get("ablation_condition", traj_df.get("model", pd.Series(dtype=str))).unique()
+    align_path = os.path.join(outdir, "umax_objective_alignment.csv")
+    if os.path.exists(align_path):
+        print("[Fig.5] Plotting umax_objective_alignment (supplementary) ...", flush=True)
+        align_df = pd.read_csv(align_path)
+        align_supp_png = os.path.join(figure_dir, "umax_objective_alignment_supplementary.png")
+        plot_umax_optima_alignment(
+            align_df, align_supp_png, u_grid=cl_manifest.get("u_grid"), faint_line_alpha=0.04,
         )
+        outputs["umax_objective_alignment_supplementary.png"] = align_supp_png
+        align_png = os.path.join(figure_dir, "umax_objective_alignment.png")
+        plot_umax_optima_alignment(
+            align_df, align_png, u_grid=cl_manifest.get("u_grid"), faint_line_alpha=0.04,
+        )
+        outputs["umax_objective_alignment.png"] = align_png
+        full_align_png = os.path.join(figure_dir, "umax_objective_alignment_full_spaghetti.png")
+        plot_umax_optima_alignment_full_spaghetti(align_df, full_align_png, u_grid=cl_manifest.get("u_grid"))
+        outputs["umax_objective_alignment_full_spaghetti.png"] = full_align_png
+
+    traj_path = os.path.join(outdir, "umax_ablation_representative_trajectories.csv")
+    plot_manifest_path = os.path.join(outdir, FIG5_PLOT_MANIFEST_JSON)
+    if os.path.exists(traj_path):
+        print("[Fig.5] Plotting umax_ode_ablation ...", flush=True)
+        traj_df = pd.read_csv(traj_path)
+        plot_manifest = {}
+        if os.path.exists(plot_manifest_path):
+            with open(plot_manifest_path, encoding="utf-8") as fh:
+                plot_manifest = json.load(fh)
+        conditions = plot_manifest.get("plot_conditions") or list(traj_df.get("ablation_condition", traj_df.get("model", [])).unique())
         t_thr_raw = plot_manifest.get("t_thr_by_condition") or {}
         t_thr_by_condition = {k: np.asarray(v, dtype=float) for k, v in t_thr_raw.items()}
         policy_umax = plot_manifest.get("policy_umax_by_condition") or {}
@@ -4006,56 +3553,79 @@ def generate_umax_optimization_plots(outdir: str) -> Dict[str, str]:
                     cond = str(row[cond_col])
                     if dose_col in row.index and pd.notna(row[dose_col]):
                         total_dosage_by_condition[cond] = float(row[dose_col])
-        plot_display_labels = plot_manifest.get("plot_display_labels")
-        full_ablation_png = os.path.join(figure_dir, "umax_ode_ablation_full.png")
+        ablation_png = os.path.join(figure_dir, "umax_ode_ablation.png")
         plot_umax_ode_ablation(
-            traj_df, conditions, t_thr_by_condition, full_ablation_png,
-            display_labels=plot_display_labels,
+            traj_df, conditions, t_thr_by_condition, ablation_png,
+            display_labels=plot_manifest.get("plot_display_labels"),
             policy_umax_by_condition=policy_umax,
             total_dosage_by_condition=total_dosage_by_condition or None,
         )
-        supplementary_outputs["umax_ode_ablation_full.png"] = full_ablation_png
-        outputs["umax_ode_ablation_full.png"] = full_ablation_png
+        primary_outputs["umax_ode_ablation.png"] = ablation_png
+        outputs["umax_ode_ablation.png"] = ablation_png
 
-    panels_included: Dict[str, bool] = {"A": True, "B": False, "C": False, "D": False}
-    if stats_df is not None and not stats_df.empty:
-        print("[Fig.5] Assembling main composite figure ...", flush=True)
-        main_png = os.path.join(figure_dir, f"{FIG5_MAIN_BASENAME}.png")
-        panels_included = assemble_fig5_umax_main(
-            outpath=main_png,
-            stats_df=stats_df,
-            trajectories_df=traj_df,
-            t_thr_by_condition=t_thr_by_condition or None,
-            conditions=conditions or None,
-            display_labels=plot_display_labels,
-            significance_pairs=sig_pairs if sig_pairs else None,
-            outdir=outdir,
-            include_ode_panel=traj_df is not None and not traj_df.empty,
+    stats_path = os.path.join(outdir, "umax_ablation_repeated_plot_stats.csv")
+    if os.path.exists(stats_path):
+        print("[Fig.5] Plotting umax_summary_ablation ...", flush=True)
+        stats_df = pd.read_csv(stats_path)
+        annotations_df = _read_optional_csv(outdir, "umax_ablation_significance_annotations.csv")
+        significance_for_manuscript = bool(
+            n_repeats >= 10 and cl_manifest.get("significance_for_manuscript", n_repeats >= 10)
         )
-        primary_outputs[f"{FIG5_MAIN_BASENAME}.png"] = main_png
-        outputs[f"{FIG5_MAIN_BASENAME}.png"] = main_png
-    elif traj_df is not None:
-        main_png = os.path.join(figure_dir, f"{FIG5_MAIN_BASENAME}.png")
-        panels_included = assemble_fig5_umax_main(
-            outpath=main_png,
-            trajectories_df=traj_df,
-            t_thr_by_condition=t_thr_by_condition or None,
-            conditions=conditions or None,
-            display_labels=plot_display_labels,
-            outdir=outdir,
-            include_ode_panel=True,
+        main_metric_names = [m for m, _ in FIG5_MAIN_SUMMARY_METRICS]
+        try:
+            from closed_loop_eval import FIG5_SIGNIFICANCE_REFERENCE
+            sig_pairs: Dict[str, List[Tuple[str, str, str]]] = {}
+            if significance_for_manuscript:
+                for metric in main_metric_names:
+                    pairs = closed_loop_significance_pairs_for_plot(
+                        annotations_df, FIG5_SIGNIFICANCE_REFERENCE, metric=metric
+                    )
+                    if pairs:
+                        sig_pairs[metric] = pairs
+        except ImportError:
+            sig_pairs = {}
+        summary_png = os.path.join(figure_dir, "umax_summary_ablation.png")
+        plot_umax_summary_ablation(
+            stats_df, summary_png, n_repeats=n_repeats,
+            significance_pairs=sig_pairs if sig_pairs else None, outdir=outdir,
+            use_short_labels=True,
         )
-        primary_outputs[f"{FIG5_MAIN_BASENAME}.png"] = main_png
-        outputs[f"{FIG5_MAIN_BASENAME}.png"] = main_png
+        primary_outputs["umax_summary_ablation.png"] = summary_png
+        outputs["umax_summary_ablation.png"] = summary_png
+        composite_supp_png = os.path.join(figure_dir, "umax_summary_ablation_composite_supplementary.png")
+        if "mean_composite_score" in stats_df.columns:
+            plot_umax_summary_ablation(
+                stats_df, composite_supp_png, n_repeats=n_repeats,
+                significance_pairs=None, outdir=outdir,
+                metric_specs=[("mean_composite_score", "Composite penalty score")],
+                use_short_labels=True,
+                horizontal_bars=True,
+            )
+            outputs["umax_summary_ablation_composite_supplementary.png"] = composite_supp_png
+        try:
+            from closed_loop_eval import FIG5_SECONDARY_SUMMARY_CONDITIONS
+            rf_summary_png = os.path.join(figure_dir, "umax_summary_ablation_with_rf.png")
+            plot_umax_summary_ablation(
+                stats_df, rf_summary_png, n_repeats=n_repeats,
+                significance_pairs=None, outdir=outdir,
+                conditions_order=list(FIG5_SECONDARY_SUMMARY_CONDITIONS),
+            )
+            outputs["umax_summary_ablation_with_rf.png"] = rf_summary_png
+        except ImportError:
+            pass
 
     plot_body = build_fig5_plot_manifest(
         primary_outputs=primary_outputs,
-        supplementary_outputs=supplementary_outputs,
-        panels_included=panels_included,
         n_repeats=n_repeats,
-        significance_for_manuscript=significance_for_manuscript,
+        significance_for_manuscript=bool(
+            n_repeats >= 10 and cl_manifest.get("significance_for_manuscript", n_repeats >= 10)
+        ),
         prediction_sources=cl_manifest.get("prediction_sources") or cl_manifest.get("prediction_input_sources"),
     )
+    plot_manifest = {}
+    if os.path.exists(plot_manifest_path):
+        with open(plot_manifest_path, encoding="utf-8") as fh:
+            plot_manifest = json.load(fh)
     plot_manifest.update(plot_body)
     plot_manifest["generated_pngs"] = list(outputs.keys())
     write_json_manifest(outdir, FIG5_PLOT_MANIFEST_JSON, plot_manifest)
@@ -4063,7 +3633,7 @@ def generate_umax_optimization_plots(outdir: str) -> Dict[str, str]:
         cl_manifest.update(plot_body)
         cl_manifest["generated_pngs"] = list(outputs.keys())
         write_json_manifest(outdir, UMAX_OPTIMIZATION_MANIFEST_JSON, cl_manifest)
-    return expand_figure_outputs(outputs)
+    return outputs
 
 
 def write_json_manifest(outdir: str, filename: str, manifest: dict) -> str:
@@ -4254,14 +3824,15 @@ def plot_fixed_umax_constraint_success(
             centers = x
             ax.errorbar(centers, y, yerr=yerr, fmt="none", capsize=4, linewidth=1.0, color="black")
         ax.set_xticks(x)
-        ax.set_xticklabels(labels, rotation=35, ha="right", fontsize=16)
+        ax.set_xticklabels(labels, rotation=35, ha="right", fontsize=FS_TICK_SM)
+        ax.tick_params(axis="x", pad=5)
         ax.set_ylim(0, 1.05)
         ax.set_ylabel("Success rate")
         ax.set_title(subtitle)
         ax.grid(axis="y", linestyle="--", alpha=0.35)
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
-    fig.tight_layout()
+    finalize_figure_layout(fig, rect=(0.0, 0.16, 1.0, 1.0))
     save_figure(fig, outpath)
     plt.close(fig)
 
@@ -4361,7 +3932,7 @@ def generate_ode_back_plots(outdir: str, config: Optional[dict] = None) -> Dict[
     if not case_df.empty and "model" in case_df.columns:
         case_df["model"] = case_df["model"].map(normalize_model_name)
 
-    model_order = [m for m in MAIN_COMPARE_ORDER if m in set(summary_df["model"])]
+    model_order = [m for m in ODE_BACK_BAR_MODEL_ORDER if m in set(summary_df["model"])]
     outputs: Dict[str, str] = {}
 
     pairwise_df = _read_optional_csv(outdir, ODE_BACK_PAIRWISE_CSV)
@@ -4529,10 +4100,10 @@ def generate_benchmark_plots(outdir: str, config: Optional[dict] = None) -> Dict
         per_target_df,
         main_path,
         summary_metric_col="mean_R2_original",
-        summary_ylabel="Mean target-wise $R^2$",
+        summary_ylabel="Mean target-wise $R^2$ (original scale)",
         summary_title="Mean target-wise $R^2$",
         heatmap_value_col="R2_original",
-        heatmap_cbar_label="$R^2$",
+        heatmap_cbar_label="$R^2$ (original scale)",
         model_order=main_models,
         significance_pairs=main_pairs if significance_for_manuscript else None,
     )
@@ -4551,10 +4122,10 @@ def generate_benchmark_plots(outdir: str, config: Optional[dict] = None) -> Dict
         per_target_df,
         pe_path,
         summary_metric_col="mean_RMSE_original",
-        summary_ylabel="Mean target-wise RMSE",
+        summary_ylabel="Mean target-wise RMSE (original scale)",
         summary_title="Mean target-wise RMSE",
         heatmap_value_col="RMSE_original",
-        heatmap_cbar_label="RMSE",
+        heatmap_cbar_label="RMSE (original scale)",
         model_order=main_models,
         significance_pairs=rmse_pairs if significance_for_manuscript else None,
     )
@@ -4831,24 +4402,36 @@ def generate_fig4_plots(outdir: str) -> Dict[str, str]:
 
 def generate_heatmap_plots(outdir: str) -> Dict[str, str]:
     """Regenerate heatmap PNGs from saved correlation-matrix CSVs."""
-    from heatmap import plot_heatmap, subset_title
+    from heatmap import filter_heatmap_correlation, plot_heatmap, subset_title
 
     config_path = os.path.join(outdir, "heatmap_config.json")
-    if not os.path.exists(config_path):
-        raise FileNotFoundError(f"Missing {config_path}; run heatmap.py first.")
-    with open(config_path, encoding="utf-8") as fh:
-        config = json.load(fh)
+    config: dict = {}
+    if os.path.exists(config_path):
+        with open(config_path, encoding="utf-8") as fh:
+            config = json.load(fh)
     outputs: Dict[str, str] = {}
     figsize = tuple(config.get("figsize", [12.0, 10.0]))
     dpi = int(config.get("dpi", 300))
     clustered = bool(config.get("clustered", False))
-    title = config.get("title") or subset_title(config.get("subset", "input"))
-    for method, paths in (config.get("outputs") or {}).items():
-        csv_path = paths.get("csv")
-        png_path = paths.get("png")
-        if not csv_path or not png_path or not os.path.exists(csv_path):
-            continue
-        corr = pd.read_csv(csv_path, index_col=0)
+    default_title = config.get("title") or subset_title(config.get("subset", "input"))
+
+    csv_paths = sorted(glob.glob(os.path.join(outdir, "*_correlation_matrix.csv")))
+    if not csv_paths and config.get("outputs"):
+        for paths in config["outputs"].values():
+            csv_path = paths.get("csv")
+            if csv_path and os.path.exists(csv_path):
+                csv_paths.append(csv_path)
+
+    for csv_path in csv_paths:
+        basename = os.path.basename(csv_path).replace("_correlation_matrix.csv", "")
+        png_path = os.path.join(outdir, f"{basename}.png")
+        if "feature_controller" in basename:
+            title = subset_title("feature_controller")
+        elif "_input" in basename or basename.startswith("heatmap_"):
+            title = subset_title("input")
+        else:
+            title = default_title
+        corr = filter_heatmap_correlation(pd.read_csv(csv_path, index_col=0))
         png_path, svg_path = plot_heatmap(corr, png_path, title, figsize, dpi, clustered)
         outputs[os.path.basename(png_path)] = png_path
         outputs[os.path.basename(svg_path)] = svg_path
@@ -5206,43 +4789,29 @@ def build_expected_artifacts(
             optional=True,
         ),
         ExpectedArtifact(
-            os.path.join(umax_optimization_figures, f"{FIG5_MAIN_BASENAME}.png"),
-            "Umax optimization main composite",
+            os.path.join(umax_optimization_figures, "umax_score_landscape.png"),
+            "Fig. 5A — Umax-response landscape",
             umax_optimization_cmd,
             "umax_optimization",
             optional=True,
         ),
         ExpectedArtifact(
-            os.path.join(umax_optimization_figures, "umax_constraint_satisfaction.png"),
-            "Individual constraint satisfaction across Umax",
+            os.path.join(umax_optimization_figures, "umax_constraint_feasibility.png"),
+            "Fig. 5B — constraint feasibility across Umax",
             umax_optimization_cmd,
             "umax_optimization",
             optional=True,
         ),
         ExpectedArtifact(
-            os.path.join(umax_optimization_figures, "umax_score_minimum_landscape.png"),
-            "Score-minimum Umax landscape",
+            os.path.join(umax_optimization_figures, "umax_ode_ablation.png"),
+            "Fig. 5C — illustrative ODE ablation trajectories",
             umax_optimization_cmd,
             "umax_optimization",
             optional=True,
         ),
         ExpectedArtifact(
-            os.path.join(umax_optimization_figures, "umax_score_components.png"),
-            "Score-component decomposition across Umax",
-            umax_optimization_cmd,
-            "umax_optimization",
-            optional=True,
-        ),
-        ExpectedArtifact(
-            os.path.join(umax_optimization_figures, "umax_ode_ablation_full.png"),
-            "Full representative ODE ablation trajectories",
-            umax_optimization_cmd,
-            "umax_optimization",
-            optional=True,
-        ),
-        ExpectedArtifact(
-            os.path.join(umax_optimization_figures, f"{FIG5_COMPOSITE_SUPPLEMENTARY_BASENAME}.png"),
-            "Composite penalty policy ablation (horizontal)",
+            os.path.join(umax_optimization_figures, "umax_summary_ablation.png"),
+            "Fig. 5D — repeated ablation summary (mean ± 95% CI)",
             umax_optimization_cmd,
             "umax_optimization",
             optional=True,
@@ -5416,7 +4985,7 @@ def plot_training_parameter_screening_marginals(screening_root: str, outpath: st
         for ax in axes[1]:
             ax.set_visible(False)
 
-    fig.suptitle("Training screening — marginal hyperparameter distributions", fontsize=22)
+    fig.suptitle("Training screening — marginal hyperparameter distributions (inner CV)", fontsize=13)
     fig.tight_layout()
     save_figure(fig, outpath)
     plt.close(fig)
@@ -5478,7 +5047,7 @@ def plot_umax_weight_profile_case_distributions(
             ax.set_title(f"{title_prefix} — {condition}")
             ax.grid(axis="y", linestyle="--", alpha=0.35)
 
-    fig.suptitle("Umax weight profile screening — case-level outcome distributions", fontsize=22)
+    fig.suptitle("Umax weight profile screening — case-level outcome distributions", fontsize=13)
     fig.tight_layout()
     save_figure(fig, outpath)
     plt.close(fig)
@@ -5528,9 +5097,20 @@ def plot_umax_weight_profile_sensitivity(
         ax.set_ylabel(ylabel)
         ax.set_title(title)
         ax.grid(axis="y", linestyle="--", alpha=0.35)
-        ax.legend(fontsize=14, loc="upper right")
-    fig.suptitle("Umax weight profile sensitivity", fontsize=22)
-    fig.tight_layout()
+        ax.legend(fontsize=9, loc="upper right")
+    if profile_weights:
+        note_lines = []
+        for name in profiles:
+            w = profile_weights.get(name, {})
+            if w:
+                note_lines.append(
+                    f"{name}: track={w.get('w_track', 1)}, path={w.get('w_path', 1)}, "
+                    f"prob={w.get('w_probiotic', 1)}, dose={w.get('w_dose', 0.25)}"
+                )
+        if note_lines:
+            fig.text(0.01, 0.01, "\n".join(note_lines), fontsize=9, color="#444444", va="bottom")
+    fig.suptitle("Umax weight profile sensitivity (development; not used to select main result)", fontsize=13)
+    fig.tight_layout(rect=(0, 0.06 if profile_weights else 0, 1, 0.96))
     save_figure(fig, outpath)
     plt.close(fig)
 
@@ -5578,8 +5158,8 @@ def plot_umax_weight_profile_definitions(profiles: Dict[str, dict], outpath: str
         for j in range(len(weight_keys)):
             val = mat[i, j]
             if np.isfinite(val):
-                ax.text(j, i, f"{val:g}", ha="center", va="center", fontsize=18, color="black")
-    ax.set_title("Screened Umax weight profiles")
+                ax.text(j, i, f"{val:g}", ha="center", va="center", fontsize=11, color="black")
+    ax.set_title("Screened Umax weight profiles (* = locked for manuscript)")
     fig.tight_layout()
     save_figure(fig, outpath)
     plt.close(fig)
@@ -5615,7 +5195,7 @@ def plot_training_parameter_screening(screening_root: str, outpath: str) -> None
         best_val = float(tar[metric].max())
         colors = [PALETTE_RED_MID if float(v) >= best_val - 1e-12 else PALETTE_BLUE_MID for v in tar[metric]]
         axes[0].barh(tar["label"], tar[metric], color=colors, edgecolor="white")
-        axes[0].set_xlabel("Inner CV mean $R^2$")
+        axes[0].set_xlabel("Inner CV mean $R^2$ (original scale)")
         axes[0].set_title("TAR hyperparameter grid")
         axes[0].grid(axis="x", linestyle="--", alpha=0.35)
 
@@ -5626,11 +5206,11 @@ def plot_training_parameter_screening(screening_root: str, outpath: str) -> None
         best_val = float(rf[metric].max())
         colors = [PALETTE_RED_MID if float(v) >= best_val - 1e-12 else PALETTE_BLUE_MID for v in rf[metric]]
         axes[1].barh(rf["label"], rf[metric], color=colors, edgecolor="white")
-        axes[1].set_xlabel("Inner CV mean $R^2$")
+        axes[1].set_xlabel("Inner CV mean $R^2$ (original scale)")
         axes[1].set_title("RandomForest hyperparameter grid")
         axes[1].grid(axis="x", linestyle="--", alpha=0.35)
 
-    fig.suptitle("Training parameter screening", fontsize=22)
+    fig.suptitle("Training parameter screening (development only; inner CV on training split)", fontsize=13)
     fig.tight_layout()
     save_figure(fig, outpath)
     plt.close(fig)
