@@ -11,7 +11,8 @@ The project combines experimental microbial characterization, a synthetic multi-
 Author: Huang, P.-C. & Ciou, Z.-C.
 
 Download analysis_plan and code folders first.
-The computational workflow is organized into the following Python scripts:
+
+The files correspond to the results presented in **Figures 2-5** of the manuscript. The computational workflow is organized into the following Python scripts:
 
 | Script | Purpose |
 |---|---|
@@ -37,7 +38,7 @@ pipeline.md
 
 Author: Huang, P.-C.
 
-The experimental data (locate in file: "experiment data") is provided in **Excel (.xlsx)** format. The files correspond to the results presented in **Figures 1–3** of the manuscript:
+The experimental data (locate in file: "experiment data") is provided in **Excel (.xlsx)** format. The files correspond to the results presented in **Figures 1** of the manuscript:
 
 ### Figure 1: Bacterial Growth Kinetics & AMP Efficacy
 Growth dynamics of pathogenic *E. coli* and probiotic *L. lactis* for ODE model fitting.
