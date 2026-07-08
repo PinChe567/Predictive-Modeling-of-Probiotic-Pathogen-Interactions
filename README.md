@@ -8,7 +8,7 @@ The project combines experimental microbial characterization, a synthetic multi-
 
 ## 💻 Code
 
-Author: Huang, P.-C. & Ciou, Z.-C.
+Author: Huang, P.-C.
 
 Download analysis_plan and code folders first.
 
