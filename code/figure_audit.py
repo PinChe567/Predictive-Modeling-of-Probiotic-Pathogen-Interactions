@@ -80,7 +80,13 @@ def apply_matplotlib_style() -> None:
         {
             "font.family": "sans-serif",
             "font.sans-serif": ["Arial", "Helvetica", "DejaVu Sans"],
-            "font.size": 10,
+            "font.size": 20,
+            "axes.titlesize": 22,
+            "axes.labelsize": 20,
+            "xtick.labelsize": 16,
+            "ytick.labelsize": 16,
+            "legend.fontsize": 16,
+            "figure.titlesize": 22,
             "axes.prop_cycle": plt.cycler(color=BAR_CYCLE),
             "axes.edgecolor": "#333333",
             "axes.labelcolor": "#333333",
@@ -501,7 +507,7 @@ def plot_metric_barplot(
             )
             ax.text(
                 (x1 + x2) / 2.0, y_bracket + tick_h + 0.015 * yspan,
-                label, ha="center", va="bottom", fontsize=11, fontweight="bold",
+                label, ha="center", va="bottom", fontsize=22, fontweight="bold",
             )
             max_bracket_top = max(max_bracket_top, y_bracket + tick_h + 0.08 * yspan)
         if valid_pairs:
@@ -529,7 +535,7 @@ def plot_r2_barplot(
         summary_df=summary_df,
         outpath=outpath,
         metric_col="mean_R2_original",
-        ylabel="Mean target-wise $R^2$ (original scale)",
+        ylabel="Mean target-wise $R^2$",
         title=title,
         model_order=model_order,
         pin_first=pin_first,
@@ -613,8 +619,8 @@ def plot_target_weight_heatmap(weights_df: pd.DataFrame, outpath: str, stacker_t
     im = plt.imshow(pivot.values, aspect="auto", **sequential_heatmap_kwargs(pivot.values))
     cbar_label = "Ridge coefficient" if stacker_type == "ridge" else "Convex weight"
     plt.colorbar(im, fraction=0.046, pad=0.04, label=cbar_label)
-    plt.xticks(range(pivot.shape[1]), pivot.columns, rotation=90, fontsize=8)
-    plt.yticks(range(pivot.shape[0]), pivot.index, fontsize=9)
+    plt.xticks(range(pivot.shape[1]), pivot.columns, rotation=90, fontsize=16)
+    plt.yticks(range(pivot.shape[0]), pivot.index, fontsize=18)
     plt.xlabel("Expert")
     plt.ylabel("Target")
     plt.title("Target-wise stacking coefficients")
@@ -655,9 +661,9 @@ def plot_per_target_metric_heatmap(
         fig = ax.figure
         fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label=cbar_label)
     ax.set_xticks(range(pivot.shape[1]))
-    ax.set_xticklabels(pivot.columns, rotation=45, ha="right", fontsize=8)
+    ax.set_xticklabels(pivot.columns, rotation=45, ha="right", fontsize=16)
     ax.set_yticks(range(pivot.shape[0]))
-    ax.set_yticklabels([model_display_label(m) for m in pivot.index], fontsize=9)
+    ax.set_yticklabels([model_display_label(m) for m in pivot.index], fontsize=18)
     ax.set_xlabel("Target")
     ax.set_ylabel("Model")
     if own_fig:
@@ -745,7 +751,7 @@ def plot_ode_back_r2_barplot(
             0.02,
             f"n repeats = {n_repeats}",
             transform=ax.transAxes,
-            fontsize=9,
+            fontsize=18,
             va="bottom",
             ha="left",
             color="#444444",
@@ -804,9 +810,9 @@ def plot_ode_back_outcome_heatmap(
     im = ax.imshow(pivot.values, aspect="auto", **sequential_heatmap_kwargs(pivot.values))
     plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label="$R^2$")
     ax.set_xticks(range(len(cols)))
-    ax.set_xticklabels(cols, rotation=45, ha="right", fontsize=8)
+    ax.set_xticklabels(cols, rotation=45, ha="right", fontsize=16)
     ax.set_yticks(range(len(pivot)))
-    ax.set_yticklabels([model_display_label(m) for m in pivot.index], fontsize=9)
+    ax.set_yticklabels([model_display_label(m) for m in pivot.index], fontsize=18)
     ax.set_xlabel("Functional outcome")
     ax.set_ylabel("Model")
     ax.set_title("ODE-back functional outcome $R^2$")
@@ -921,7 +927,7 @@ def plot_prediction_error_heatmap(per_target_df: pd.DataFrame, outpath: str, mod
         outpath,
         models,
         "RMSE_original",
-        "RMSE (original scale)",
+        "RMSE",
     )
 
 
@@ -1016,7 +1022,7 @@ def _scatter_uncertainty_trend(
     *,
     spearman_rho: Optional[float] = None,
     pearson_r2: Optional[float] = None,
-    show_pearson_r2: bool = True,
+    show_pearson_r2: bool = False,
     stats_x: Optional[np.ndarray] = None,
     stats_y: Optional[np.ndarray] = None,
     trend_x: Optional[np.ndarray] = None,
@@ -1047,7 +1053,7 @@ def _scatter_uncertainty_trend(
             "\n".join(stat_lines),
             transform=ax.transAxes,
             va="top",
-            fontsize=8,
+            fontsize=16,
             color="0.25",
         )
 
@@ -1142,9 +1148,8 @@ def _plot_uncertainty_by_target_bars(
     axes_bar[0].set_xticks(x)
     axes_bar[0].set_xticklabels(targets)
     axes_bar[0].set_ylabel("Mean std")
-    title_suffix = " (mean ± 95% CI across repeats)" if has_ci else ""
-    axes_bar[0].set_title(f"Aleatoric vs epistemic by target{title_suffix}")
-    axes_bar[0].legend(frameon=False, fontsize=8, loc="upper center", bbox_to_anchor=(0.5, 1.22), ncol=2)
+    axes_bar[0].set_title("Aleatoric vs epistemic by target")
+    axes_bar[0].legend(frameon=False, fontsize=16, loc="upper center", bbox_to_anchor=(0.5, 1.22), ncol=2)
     axes_bar[0].grid(axis="y", linestyle="--", alpha=0.35)
     axes_bar[1].bar(
         x,
@@ -1207,7 +1212,7 @@ def _render_uncertainty_column(
     ax_ale.set_xlabel("Aleatoric std")
     if col_idx == 0:
         ax_ale.set_ylabel("|error|")
-    ax_ale.set_title(title, fontsize=9)
+    ax_ale.set_title(title, fontsize=18)
     ax_ale.grid(axis="both", linestyle="--", alpha=0.25)
 
     ax_epi = axes[1, col_idx]
@@ -1300,11 +1305,10 @@ def plot_uncertainty_decomposition(
         _plot_uncertainty_by_target_bars(per_target, targets, per_target_path, n_repeats=n_repeats)
 
     method_label = "MC Dropout" if method == "mc_dropout" else "Deep Ensembles"
-    repeat_note = f"; n_repeats={n_repeats}" if n_repeats > 1 else ""
     fig.suptitle(
-        f"Uncertainty vs |error| ({method_label}) — band = binned mean ± 1 std{repeat_note}",
+        f"Uncertainty vs |error| ({method_label})",
         y=1.02,
-        fontsize=11,
+        fontsize=22,
     )
     fig.tight_layout()
     save_figure(fig, outpath)
@@ -1364,11 +1368,11 @@ def plot_representative_ode_trajectory(
     fig, axes = plt.subplots(3, 1, figsize=(10, 8), sharex=True)
     axes[0].plot(times, C, color=TRAJECTORY_AMP, linewidth=1.8)
     axes[0].set_ylabel(r"AMP ($\mu$g mL$^{-1}$)")
-    axes[0].set_title(f"AMP concentration ({total_dosage:.1f} µg/mL total)")
+    axes[0].set_title("AMP concentration")
 
     axes[1].plot(times, P_total / 1e6, color=TRAJECTORY_PROBIOTIC, linewidth=1.8)
     axes[1].set_ylabel(r"Probiotic ($\times 10^6$ CFU mL$^{-1}$)")
-    axes[1].set_title("Probiotic (total, S/R)" if probiotic_two_compartment else "Probiotic")
+    axes[1].set_title("Probiotic")
 
     pathogen_colors = TRAJECTORY_PATHOGENS[:N_ODE_STRAINS]
     for i in range(N_ODE_STRAINS):
@@ -1388,7 +1392,7 @@ def plot_representative_ode_trajectory(
     axes[2].set_xlabel("Time (h)")
     axes[2].set_ylabel(r"Pathogen strain ($\times 10^6$ CFU mL$^{-1}$)")
     axes[2].set_title("Pathogens")
-    axes[2].legend(ncol=5, fontsize=8, frameon=False)
+    axes[2].legend(ncol=5, fontsize=16, frameon=False)
     fig.tight_layout()
     save_figure(fig, outpath)
     plt.close(fig)
@@ -1451,7 +1455,7 @@ def plot_fixed_umax_representative(
         title = display_labels[col] if col < len(display_labels) else _closed_loop_display_label(model_name)
 
         axes[0, col].plot(times, C, linewidth=1.8, color=TRAJECTORY_AMP)
-        axes[0, col].set_title(title, fontsize=11)
+        axes[0, col].set_title(title, fontsize=22)
         if col == 0:
             axes[0, col].set_ylabel(r"AMP ($\mu$g mL$^{-1}$)")
 
@@ -1482,7 +1486,7 @@ def plot_fixed_umax_representative(
             legend_handles,
             legend_labels,
             ncol=min(6, len(legend_labels)),
-            fontsize=8,
+            fontsize=16,
             frameon=True,
             loc="lower center",
             bbox_to_anchor=(0.5, -0.02),
@@ -1762,7 +1766,7 @@ def _plot_metric_panel_with_ci(
             height=0.72,
         )
         ax.set_yticks(pos)
-        ax.set_yticklabels(display_labels, fontsize=9)
+        ax.set_yticklabels(display_labels, fontsize=18)
         ax.set_xlabel(ylabel)
         ax.grid(axis="x", linestyle="--", alpha=0.35)
     else:
@@ -1776,7 +1780,7 @@ def _plot_metric_panel_with_ci(
             width=0.72,
         )
         ax.set_xticks(pos)
-        ax.set_xticklabels(display_labels, rotation=35, ha="right", fontsize=8)
+        ax.set_xticklabels(display_labels, rotation=35, ha="right", fontsize=16)
         ax.set_ylabel(ylabel)
         ax.grid(axis="y", linestyle="--", alpha=0.35)
     ax.spines["top"].set_visible(False)
@@ -1824,7 +1828,7 @@ def _plot_metric_panel_with_ci(
                 label,
                 ha="center",
                 va="bottom",
-                fontsize=10,
+                fontsize=20,
                 fontweight="bold",
             )
             max_bracket_top = max(max_bracket_top, y_bracket + tick_h + 0.08 * yspan)
@@ -2016,8 +2020,8 @@ def plot_fixed_umax_summary(
 
     if n_repeats <= 1:
         fig.suptitle(
-            "Fixed Umax forward comparison (3 ODE runs; point estimates, no repeat-level CI)",
-            fontsize=10,
+            "Fixed Umax forward comparison",
+            fontsize=20,
             y=1.02,
         )
 
@@ -2528,7 +2532,7 @@ def _load_umax_candidates_csv_for_plot(
     return work
 
 
-def _annotate_panel_letter(ax, letter: str, *, x: float = -0.10, y: float = 1.06, fontsize: int = 12) -> None:
+def _annotate_panel_letter(ax, letter: str, *, x: float = -0.10, y: float = 1.06, fontsize: int = 24) -> None:
     ax.text(
         x, y, letter, transform=ax.transAxes,
         fontsize=fontsize, fontweight="bold", va="top", ha="left",
@@ -2554,7 +2558,7 @@ def _draw_umax_optimizer_schematic(ax) -> None:
             zorder=2,
         )
         ax.add_patch(rect)
-        ax.text(cx, cy, text, ha="center", va="center", fontsize=8, transform=ax.transAxes, zorder=3)
+        ax.text(cx, cy, text, ha="center", va="center", fontsize=16, transform=ax.transAxes, zorder=3)
 
     def _arrow(x0: float, y0: float, x1: float, y1: float, *, dashed: bool = False):
         ax.annotate(
@@ -2681,7 +2685,7 @@ def plot_umax_composite_penalty_ablation(
         horizontal=horizontal,
     )
     if not horizontal:
-        ax.set_xticklabels([label_fn(m) for m in plot_df["model"]], rotation=30, ha="right", fontsize=9)
+        ax.set_xticklabels([label_fn(m) for m in plot_df["model"]], rotation=30, ha="right", fontsize=18)
     if panel_letter:
         _annotate_panel_letter(ax, panel_letter)
     fig.tight_layout()
@@ -2722,8 +2726,8 @@ def plot_umax_multi_metric_ablation(
             display_labels=[label_fn(m) for m in plot_df["model"].tolist()],
             bar_colors=bar_colors,
         )
-        ax.set_title(title, fontsize=10)
-        ax.set_xticklabels([label_fn(m) for m in plot_df["model"]], rotation=35, ha="right", fontsize=8)
+        ax.set_title(title, fontsize=20)
+        ax.set_xticklabels([label_fn(m) for m in plot_df["model"]], rotation=35, ha="right", fontsize=16)
     for ax in axes_flat[len(metric_specs):]:
         ax.set_visible(False)
     if panel_letter:
@@ -2774,9 +2778,9 @@ def plot_umax_ode_ablation_simplified(
         times = sub["time_h"].to_numpy(dtype=float)
         all_times.append(times)
         policy_label = label_by_cond.get(condition, FIG5_ODE_POLICY_SHORT_LABELS.get(condition, condition))
-        title = f"{policy_label}\n(representative case)"
+        title = policy_label
         axes[0, col].plot(times, sub["P_total_CFU_per_mL"] / 1e6, linewidth=1.8, color=TRAJECTORY_PROBIOTIC)
-        axes[0, col].set_title(title, fontsize=9)
+        axes[0, col].set_title(title, fontsize=18)
         if col == 0:
             axes[0, col].set_ylabel("Probiotic (x1e6 CFU/mL)")
         pathogen_total = np.zeros_like(times, dtype=float)
@@ -2854,7 +2858,7 @@ def assemble_fig5_umax_main(
             display_labels=[label_fn(m) for m in plot_df["model"].tolist()],
             bar_colors=bar_colors,
         )
-        ax_b.set_xticklabels([label_fn(m) for m in plot_df["model"]], rotation=30, ha="right", fontsize=9)
+        ax_b.set_xticklabels([label_fn(m) for m in plot_df["model"]], rotation=30, ha="right", fontsize=18)
         panel_included["B"] = True
     else:
         ax_b.axis("off")
@@ -2881,8 +2885,8 @@ def assemble_fig5_umax_main(
                 display_labels=[label_fn(m) for m in plot_df["model"].tolist()],
                 bar_colors=bar_colors,
             )
-            ax.set_title(title, fontsize=10)
-            ax.set_xticklabels([label_fn(m) for m in plot_df["model"]], rotation=35, ha="right", fontsize=8)
+            ax.set_title(title, fontsize=20)
+            ax.set_xticklabels([label_fn(m) for m in plot_df["model"]], rotation=35, ha="right", fontsize=16)
         panel_included["C"] = True
     for ax in c_axes[len(metric_specs):]:
         ax.set_visible(False)
@@ -2903,9 +2907,9 @@ def assemble_fig5_umax_main(
             times = sub["time_h"].to_numpy(dtype=float)
             all_times.append(times)
             policy_label = label_by_cond.get(condition, FIG5_ODE_POLICY_SHORT_LABELS.get(condition, condition))
-            title = f"{policy_label}\n(representative case)"
+            title = policy_label
             d_axes[0, col_idx].plot(times, sub["P_total_CFU_per_mL"] / 1e6, linewidth=1.8, color=TRAJECTORY_PROBIOTIC)
-            d_axes[0, col_idx].set_title(title, fontsize=9)
+            d_axes[0, col_idx].set_title(title, fontsize=18)
             if col_idx == 0:
                 d_axes[0, col_idx].set_ylabel("Probiotic (x1e6 CFU/mL)")
             pathogen_total = np.zeros_like(times, dtype=float)
@@ -3037,7 +3041,7 @@ def plot_umax_response_landscape(
     ax.grid(axis="both", linestyle="--", alpha=0.3)
     handles, labels = ax.get_legend_handles_labels()
     if handles:
-        ax.legend(handles, labels, loc="upper right", fontsize=8, frameon=False)
+        ax.legend(handles, labels, loc="upper right", fontsize=16, frameon=False)
     fig.tight_layout()
     save_figure(fig, outpath)
     plt.close(fig)
@@ -3097,7 +3101,7 @@ def plot_umax_constraint_feasibility(
     ax.set_xlim(left=0)
     ax.set_ylim(0.0, 1.0)
     ax.grid(axis="both", linestyle="--", alpha=0.3)
-    ax.legend(loc="lower right", fontsize=8, frameon=False)
+    ax.legend(loc="lower right", fontsize=16, frameon=False)
     fig.tight_layout()
     save_figure(fig, outpath)
     plt.close(fig)
@@ -3223,7 +3227,7 @@ def plot_umax_score_landscape(
     ax.grid(axis="both", linestyle="--", alpha=0.3)
     handles, labels = ax.get_legend_handles_labels()
     if handles:
-        ax.legend(handles, labels, loc="upper right", fontsize=8, frameon=False)
+        ax.legend(handles, labels, loc="upper right", fontsize=16, frameon=False)
     fig.tight_layout()
     save_figure(fig, outpath)
     plt.close(fig)
@@ -3384,7 +3388,7 @@ def plot_umax_score_components_landscape(
             [f"{label} Umax={u:.1f}" for u, label in vlines],
             loc="upper center",
             ncol=min(len(vlines), 3),
-            fontsize=8,
+            fontsize=16,
             frameon=False,
             bbox_to_anchor=(0.5, 1.02),
         )
@@ -3610,7 +3614,7 @@ def plot_umax_ode_ablation(
             title_parts.append(f"dosage={dose_val:.0f}")
         title = "\n".join(title_parts)
         axes[0, col].plot(times, sub["C_ug_per_mL"], linewidth=1.8, color=TRAJECTORY_AMP)
-        axes[0, col].set_title(title, fontsize=10)
+        axes[0, col].set_title(title, fontsize=20)
         if col == 0:
             axes[0, col].set_ylabel(r"AMP ($\mu$g/mL)")
         axes[1, col].plot(times, sub["P_total_CFU_per_mL"] / 1e6, linewidth=1.8, color=TRAJECTORY_PROBIOTIC)
@@ -3631,7 +3635,7 @@ def plot_umax_ode_ablation(
             axes[2, col].set_ylabel(r"Pathogen burden ($\times10^6$ CFU/mL)")
             legend_handles, legend_labels = axes[2, col].get_legend_handles_labels()
     if legend_handles and legend_labels:
-        fig.legend(legend_handles, legend_labels, ncol=5, fontsize=8, frameon=True, loc="lower center", bbox_to_anchor=(0.5, -0.02))
+        fig.legend(legend_handles, legend_labels, ncol=5, fontsize=16, frameon=True, loc="lower center", bbox_to_anchor=(0.5, -0.02))
     if all_times:
         x_min = float(min(t[0] for t in all_times))
         x_max = float(max(t[-1] for t in all_times))
@@ -3644,7 +3648,6 @@ def plot_umax_ode_ablation(
         ymax = max(y[1] for y in ylims)
         for c in range(n_cols):
             axes[row, c].set_ylim(ymin, ymax * 1.03)
-    fig.text(0.99, 0.01, "representative case", ha="right", va="bottom", fontsize=8, alpha=0.55, style="italic")
     fig.tight_layout()
     save_figure(fig, outpath)
     plt.close(fig)
@@ -3743,7 +3746,7 @@ def plot_umax_summary_ablation(
         )
         ax.set_xticklabels(
             [label_fn(m) for m in plot_df["model"]],
-            rotation=25, ha="right", fontsize=8,
+            rotation=25, ha="right", fontsize=16,
         )
     for ax in axes[panel_idx:]:
         ax.set_visible(False)
@@ -4251,7 +4254,7 @@ def plot_fixed_umax_constraint_success(
             centers = x
             ax.errorbar(centers, y, yerr=yerr, fmt="none", capsize=4, linewidth=1.0, color="black")
         ax.set_xticks(x)
-        ax.set_xticklabels(labels, rotation=35, ha="right", fontsize=8)
+        ax.set_xticklabels(labels, rotation=35, ha="right", fontsize=16)
         ax.set_ylim(0, 1.05)
         ax.set_ylabel("Success rate")
         ax.set_title(subtitle)
@@ -4526,10 +4529,10 @@ def generate_benchmark_plots(outdir: str, config: Optional[dict] = None) -> Dict
         per_target_df,
         main_path,
         summary_metric_col="mean_R2_original",
-        summary_ylabel="Mean target-wise $R^2$ (original scale)",
+        summary_ylabel="Mean target-wise $R^2$",
         summary_title="Mean target-wise $R^2$",
         heatmap_value_col="R2_original",
-        heatmap_cbar_label="$R^2$ (original scale)",
+        heatmap_cbar_label="$R^2$",
         model_order=main_models,
         significance_pairs=main_pairs if significance_for_manuscript else None,
     )
@@ -4548,10 +4551,10 @@ def generate_benchmark_plots(outdir: str, config: Optional[dict] = None) -> Dict
         per_target_df,
         pe_path,
         summary_metric_col="mean_RMSE_original",
-        summary_ylabel="Mean target-wise RMSE (original scale)",
+        summary_ylabel="Mean target-wise RMSE",
         summary_title="Mean target-wise RMSE",
         heatmap_value_col="RMSE_original",
-        heatmap_cbar_label="RMSE (original scale)",
+        heatmap_cbar_label="RMSE",
         model_order=main_models,
         significance_pairs=rmse_pairs if significance_for_manuscript else None,
     )
@@ -5413,7 +5416,7 @@ def plot_training_parameter_screening_marginals(screening_root: str, outpath: st
         for ax in axes[1]:
             ax.set_visible(False)
 
-    fig.suptitle("Training screening — marginal hyperparameter distributions (inner CV)", fontsize=11)
+    fig.suptitle("Training screening — marginal hyperparameter distributions", fontsize=22)
     fig.tight_layout()
     save_figure(fig, outpath)
     plt.close(fig)
@@ -5475,7 +5478,7 @@ def plot_umax_weight_profile_case_distributions(
             ax.set_title(f"{title_prefix} — {condition}")
             ax.grid(axis="y", linestyle="--", alpha=0.35)
 
-    fig.suptitle("Umax weight profile screening — case-level outcome distributions", fontsize=11)
+    fig.suptitle("Umax weight profile screening — case-level outcome distributions", fontsize=22)
     fig.tight_layout()
     save_figure(fig, outpath)
     plt.close(fig)
@@ -5502,7 +5505,7 @@ def plot_umax_weight_profile_sensitivity(
     fig, axes = plt.subplots(1, 2, figsize=(max(10, 2.2 * n_profiles), 5.2))
 
     for ax, metric_col, ylabel, title in (
-        (axes[0], "mean_composite_penalty", "Mean composite penalty", "Optimizer burden (lower is better)"),
+        (axes[0], "mean_composite_penalty", "Mean composite penalty", "Optimizer burden"),
         (axes[1], "mean_total_dosage", "Mean total dosage (µg/mL)", "Dose burden"),
     ):
         if metric_col not in sens_df.columns:
@@ -5525,20 +5528,9 @@ def plot_umax_weight_profile_sensitivity(
         ax.set_ylabel(ylabel)
         ax.set_title(title)
         ax.grid(axis="y", linestyle="--", alpha=0.35)
-        ax.legend(fontsize=7, loc="upper right")
-    if profile_weights:
-        note_lines = []
-        for name in profiles:
-            w = profile_weights.get(name, {})
-            if w:
-                note_lines.append(
-                    f"{name}: track={w.get('w_track', 1)}, path={w.get('w_path', 1)}, "
-                    f"prob={w.get('w_probiotic', 1)}, dose={w.get('w_dose', 0.25)}"
-                )
-        if note_lines:
-            fig.text(0.01, 0.01, "\n".join(note_lines), fontsize=7, color="#444444", va="bottom")
-    fig.suptitle("Umax weight profile sensitivity (development; not used to select main result)", fontsize=11)
-    fig.tight_layout(rect=(0, 0.06 if profile_weights else 0, 1, 0.96))
+        ax.legend(fontsize=14, loc="upper right")
+    fig.suptitle("Umax weight profile sensitivity", fontsize=22)
+    fig.tight_layout()
     save_figure(fig, outpath)
     plt.close(fig)
 
@@ -5586,8 +5578,8 @@ def plot_umax_weight_profile_definitions(profiles: Dict[str, dict], outpath: str
         for j in range(len(weight_keys)):
             val = mat[i, j]
             if np.isfinite(val):
-                ax.text(j, i, f"{val:g}", ha="center", va="center", fontsize=9, color="black")
-    ax.set_title("Screened Umax weight profiles (* = locked for manuscript)")
+                ax.text(j, i, f"{val:g}", ha="center", va="center", fontsize=18, color="black")
+    ax.set_title("Screened Umax weight profiles")
     fig.tight_layout()
     save_figure(fig, outpath)
     plt.close(fig)
@@ -5623,7 +5615,7 @@ def plot_training_parameter_screening(screening_root: str, outpath: str) -> None
         best_val = float(tar[metric].max())
         colors = [PALETTE_RED_MID if float(v) >= best_val - 1e-12 else PALETTE_BLUE_MID for v in tar[metric]]
         axes[0].barh(tar["label"], tar[metric], color=colors, edgecolor="white")
-        axes[0].set_xlabel("Inner CV mean $R^2$ (original scale)")
+        axes[0].set_xlabel("Inner CV mean $R^2$")
         axes[0].set_title("TAR hyperparameter grid")
         axes[0].grid(axis="x", linestyle="--", alpha=0.35)
 
@@ -5634,11 +5626,11 @@ def plot_training_parameter_screening(screening_root: str, outpath: str) -> None
         best_val = float(rf[metric].max())
         colors = [PALETTE_RED_MID if float(v) >= best_val - 1e-12 else PALETTE_BLUE_MID for v in rf[metric]]
         axes[1].barh(rf["label"], rf[metric], color=colors, edgecolor="white")
-        axes[1].set_xlabel("Inner CV mean $R^2$ (original scale)")
+        axes[1].set_xlabel("Inner CV mean $R^2$")
         axes[1].set_title("RandomForest hyperparameter grid")
         axes[1].grid(axis="x", linestyle="--", alpha=0.35)
 
-    fig.suptitle("Training parameter screening (development only; inner CV on training split)", fontsize=11)
+    fig.suptitle("Training parameter screening", fontsize=22)
     fig.tight_layout()
     save_figure(fig, outpath)
     plt.close(fig)
