@@ -7,7 +7,7 @@ Run commands from the **project root** in PowerShell, in order. Manuscript outpu
 ## Environment setup (first run)
 
 ```powershell
-pip install numpy pandas scipy scikit-learn matplotlib joblib pyyaml numba lightgbm xgboost
+pip install numpy pandas scipy scikit-learn matplotlib joblib pyyaml numba lightgbm xgboost SALib
 ```
 
 
@@ -20,6 +20,7 @@ pip install numpy pandas scipy scikit-learn matplotlib joblib pyyaml numba light
 | `numba`                                    | Fast ODE (steps 6 / 8 / 10; `--backend auto`)                     |
 | `lightgbm`                                 | TAR benchmark trees (step 5; `--lgbm_device gpu` needs GPU build) |
 | `xgboost`                                  | Some `multi_pathogen_simulator.py` scripts                        |
+| `SALib`                                    | Morris elementary effects (step 4b `--mode mu_sensitivity`)       |
 
 
 **Optional (GPU relabel scoring):** `pip install torch` — only for step 2 with `--device gpu`; otherwise use `--device cpu`.
@@ -45,6 +46,7 @@ Phase B — Relabel + hyperparameter selection (choose one; see step 2)
 Phase C — Formal evaluation (Stage 1)
  3. Heatmap                        → results\heatmap\
  4. Representative ODE             → results\ode\
+ 4b. Morris μ sensitivity (opt.)   → results\mu_sensitivity\
  5. Benchmark + uncertainty        → results\tree_srl_benchmark\
  5b. Umax weight sensitivity (opt.) → results\screening\umax_weights\
  6. ODE-back validation             → results\ode_back_validation\
@@ -78,7 +80,7 @@ Phase C — Formal evaluation (Stage 1)
 | File                             | Role                                                                                                                               |
 | -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
 | `microbio_dataset.py`            | Steps 1–2: data generation, Tthr relabel bundle; **Stage-0 screening** (`run_parameter_screening_pipeline`)                        |
-| `multi_pathogen_simulator.py`    | Step 4: representative ODE trajectories                                                                                            |
+| `multi_pathogen_simulator.py`    | Step 4: representative ODE trajectories; **step 4b** Morris μ sensitivity (`--mode mu_sensitivity`)                               |
 | `simulate_case_metrics_fast.py`  | Metrics-only ODE (internal fast path for steps 6 / 8 / 10)                                                                         |
 | `heatmap.py`                     | Step 3: correlation heatmaps                                                                                                       |
 | `tree_srl_benchmark.py`          | Step 5: TAR benchmark (candidate-score alignment, uncertainty decomposition); training screening                                   |
@@ -222,6 +224,25 @@ python .\figure_audit.py --mode generate_plots --groups ode --ode_outdir .\resul
 
 ---
 
+## 4b — Morris μ sensitivity (optional; development only)
+
+**When:** after **step 4** (or anytime the ODE profile is available). Does **not** regenerate the supervised dataset and does **not** train any ML model. Not required for the manuscript mainline (steps 5–11).
+
+**Goal:** SALib Morris elementary-effects analysis over the 31 raw-library factors (including μ₁–μ₅), using the formal raw-library parameter bounds and `simulate_case`.
+
+```powershell
+python .\multi_pathogen_simulator.py `
+  --mode mu_sensitivity `
+  --profile paper_figure `
+  --outdir .\results\mu_sensitivity
+```
+
+**Outputs:** `mu_morris_all_factors.csv`, `mu_morris_indices.csv`, `mu_morris_summary.png` + `.svg`, `mu_morris_manifest.json` under `results\mu_sensitivity\`
+
+**Settings:** 64 trajectories, 4 grid levels, seed `2026`.
+
+---
+
 ## 5 — Benchmark TAR predictions
 
 ```powershell
@@ -302,12 +323,13 @@ python .\ode_back_validation.py `
   --models TAR,RandomForest,BestSingleTree,UniformTreeMean `
   --backend numba `
   --n_jobs 10 `
-  --validate_fast_backend
+  --validate_fast_backend `
+  --include_direct_threshold_baseline
 ```
 
-**Outputs:** `ode_back_summary_by_model.csv`, `ode_back_per_outcome_metrics.csv`, `figure\ode_back_outcome_heatmap.png` + `.svg`
+**Outputs:** `ode_back_summary_by_model.csv`, `ode_back_per_outcome_metrics.csv`, `figure\ode_back_outcome_heatmap.png` + `.svg`; with `--include_direct_threshold_baseline` also `direct_threshold_case_results.csv`, `direct_threshold_summary.csv`, `direct_threshold_support_audit.csv`, `direct_threshold_comparison.png` + `.svg`
 
-**Note:** No retraining; no Umax optimization; requires step 5.
+**Note:** No retraining; no Umax optimization; requires step 5. Direct-threshold baselines (`DirectRuleUnclipped` / `DirectRuleClipped`) use `Tthr_i = B0_i * 10**(-LR_i_target)` on the same held-out rows as TAR.
 
 ---
 

@@ -4,13 +4,20 @@ import argparse
 import itertools
 import json
 import os
+import subprocess
 from dataclasses import dataclass
-from typing import List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional
 
 import numpy as np
 import pandas as pd
 
-from figure_audit import trajectory_history_from_arrays, write_json_manifest
+from figure_audit import (
+    HEATMAP_SEQUENTIAL,
+    apply_matplotlib_style,
+    save_figure,
+    trajectory_history_from_arrays,
+    write_json_manifest,
+)
 
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
@@ -1122,9 +1129,541 @@ def row_from_case(B0, k_arr, gamma_arr, rho_arr, mu_arr, u_max, T_thr) -> np.nda
     )
 
 
+# ---------------------------------------------------------------------------
+# Morris elementary-effects sensitivity (CLI mode: mu_sensitivity)
+# ---------------------------------------------------------------------------
+
+MORRIS_N_TRAJECTORIES = 64
+MORRIS_NUM_LEVELS = 4
+MORRIS_SEED = 2026
+MORRIS_MU_FACTORS = [f"mu_{i}" for i in range(1, N_STRAINS + 1)]
+MORRIS_OUTPUT_NAMES = (
+    [
+        "terminal_stress_response_fraction",
+        "dose_count",
+        "cumulative_dosage",
+    ]
+    + [f"LR{i}" for i in range(1, N_STRAINS + 1)]
+    + [
+        "mean_LR",
+        "Bterminal",
+        "PAUC",
+    ]
+)
+MORRIS_OUTPUT_LABELS = {
+    "terminal_stress_response_fraction": "Stress fraction",
+    "dose_count": "Dose count",
+    "cumulative_dosage": "Total dose",
+    "LR1": "LR1",
+    "LR2": "LR2",
+    "LR3": "LR3",
+    "LR4": "LR4",
+    "LR5": "LR5",
+    "mean_LR": "Mean LR",
+    "Bterminal": "Bterminal",
+    "PAUC": "P_AUC",
+}
+MORRIS_INDICES_CANDIDATES = ("mu_morris_indices.csv", "mu_morris_all_factors.csv")
+MORRIS_MANIFEST_NAME = "mu_morris_manifest.json"
+
+
+def _git_commit_hash() -> Optional[str]:
+    try:
+        out = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=os.path.dirname(os.path.abspath(__file__)) or ".",
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        return out.strip() or None
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+
+def raw_library_threshold_levels() -> np.ndarray:
+    """Discrete Tthr levels used by the formal raw-library design."""
+    return 0.4 * 2.0e7 * 1.26 ** np.arange(10)
+
+
+def morris_factor_bounds(profile: ModelProfile) -> Tuple[List[str], List[List[float]]]:
+    """Return (names, bounds) matching the formal raw-library design ranges."""
+    thr_levels = raw_library_threshold_levels()
+    t_lo = float(np.min(thr_levels))
+    t_hi = float(np.max(thr_levels))
+
+    names: List[str] = []
+    bounds: List[List[float]] = []
+
+    for i in range(N_STRAINS):
+        names.append(f"B0_{i + 1}")
+        bounds.append([float(0.6 * profile.B0_rep[i]), float(1.4 * profile.B0_rep[i])])
+    for i in range(N_STRAINS):
+        names.append(f"k_{i + 1}")
+        bounds.append([float(0.8 * profile.k_rep[i]), float(1.2 * profile.k_rep[i])])
+    for i in range(N_STRAINS):
+        names.append(f"gamma_{i + 1}_S")
+        bounds.append([float(0.8 * profile.gamma_s_rep[i]), float(1.2 * profile.gamma_s_rep[i])])
+    for i in range(N_STRAINS):
+        names.append(f"rho_{i + 1}")
+        bounds.append([float(profile.rho_rep[i] + 0.0), float(profile.rho_rep[i] + 0.05)])
+    for i in range(N_STRAINS):
+        names.append(f"mu_{i + 1}")
+        bounds.append([float(0.8 * profile.mu_rep[i]), float(1.2 * profile.mu_rep[i])])
+
+    names.append("Umax")
+    bounds.append([10.0, 30.0])
+    for i in range(N_STRAINS):
+        names.append(f"Tthr_{i + 1}")
+        bounds.append([t_lo, t_hi])
+
+    if len(names) != 31:
+        raise RuntimeError(f"Expected 31 Morris factors, got {len(names)}.")
+    return names, bounds
+
+
+def _unpack_morris_params(x: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, float, np.ndarray]:
+    x = np.asarray(x, dtype=float)
+    B0 = x[0:5]
+    k_arr = x[5:10]
+    gamma_arr = x[10:15]
+    rho_arr = x[15:20]
+    mu_arr = x[20:25]
+    u_max = float(x[25])
+    T_thr = x[26:31]
+    return B0, k_arr, gamma_arr, rho_arr, mu_arr, u_max, T_thr
+
+
+def morris_outputs_from_simulation(res: SimulationResult) -> Dict[str, float]:
+    """Map a simulate_case result onto the Morris response vector."""
+    b_terminal_vec = np.asarray(res.B_total[-1], dtype=float)
+    b_t_terminal = np.asarray(res.B_T[-1], dtype=float)
+    b_sum = float(b_terminal_vec.sum())
+    if b_sum > 0.0:
+        stress_frac = float(b_t_terminal.sum() / b_sum)
+    else:
+        stress_frac = 0.0
+    lr = np.asarray(res.LR, dtype=float)
+    return {
+        "terminal_stress_response_fraction": stress_frac,
+        "dose_count": float(res.dose_count),
+        "cumulative_dosage": float(res.total_dosage),
+        "LR1": float(lr[0]),
+        "LR2": float(lr[1]),
+        "LR3": float(lr[2]),
+        "LR4": float(lr[3]),
+        "LR5": float(lr[4]),
+        "mean_LR": float(np.mean(lr)),
+        "Bterminal": b_sum,
+        "PAUC": float(res.P_AUC),
+    }
+
+
+def evaluate_morris_sample(profile: ModelProfile, x: np.ndarray) -> np.ndarray:
+    B0, k_arr, gamma_arr, rho_arr, mu_arr, u_max, T_thr = _unpack_morris_params(x)
+    res = simulate_case(profile, B0, k_arr, gamma_arr, rho_arr, mu_arr, u_max, T_thr)
+    outs = morris_outputs_from_simulation(res)
+    return np.array([outs[name] for name in MORRIS_OUTPUT_NAMES], dtype=float)
+
+
+def resolve_morris_indices_path(outdir: str) -> str:
+    for name in MORRIS_INDICES_CANDIDATES:
+        path = os.path.join(outdir, name)
+        if os.path.isfile(path):
+            return path
+    png_path = os.path.join(outdir, "mu_morris_summary.png")
+    if os.path.isfile(png_path):
+        raise FileNotFoundError(
+            f"Found {png_path} but no raw Morris index table "
+            f"({', '.join(MORRIS_INDICES_CANDIDATES)}). "
+            "Refusing to digitize the image or invent values."
+        )
+    raise FileNotFoundError(
+        f"No raw Morris index table found under {outdir}. "
+        f"Expected one of: {', '.join(MORRIS_INDICES_CANDIDATES)}."
+    )
+
+
+def load_morris_manifest(outdir: str) -> dict:
+    path = os.path.join(outdir, MORRIS_MANIFEST_NAME)
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"Missing Morris run manifest: {path}")
+    with open(path, encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def _manifest_int(manifest: dict, *keys: str) -> Optional[int]:
+    for key in keys:
+        if key in manifest and manifest[key] is not None:
+            try:
+                return int(manifest[key])
+            except (TypeError, ValueError):
+                continue
+    return None
+
+
+def validate_morris_indices_and_manifest(
+    indices_df: pd.DataFrame,
+    manifest: dict,
+) -> Tuple[pd.DataFrame, dict]:
+    required = {"factor", "output", "mu_star", "sigma"}
+    missing = required - set(indices_df.columns)
+    if missing:
+        raise ValueError(f"Morris index table missing columns: {sorted(missing)}")
+
+    work = indices_df.loc[:, ["factor", "output", "mu_star", "sigma"]].copy()
+    work["factor"] = work["factor"].astype(str)
+    work["output"] = work["output"].astype(str)
+    work["mu_star"] = pd.to_numeric(work["mu_star"], errors="coerce")
+    work["sigma"] = pd.to_numeric(work["sigma"], errors="coerce")
+
+    factors = list(dict.fromkeys(work["factor"].tolist()))
+    outputs = list(dict.fromkeys(work["output"].tolist()))
+    if len(factors) != 31:
+        raise ValueError(f"Expected exactly 31 factors, found {len(factors)}.")
+    if len(outputs) != 11:
+        raise ValueError(f"Expected exactly 11 outputs, found {len(outputs)}.")
+    if set(outputs) != set(MORRIS_OUTPUT_NAMES):
+        raise ValueError(
+            "Output names do not match the Morris analysis set. "
+            f"missing={sorted(set(MORRIS_OUTPUT_NAMES) - set(outputs))}; "
+            f"extra={sorted(set(outputs) - set(MORRIS_OUTPUT_NAMES))}"
+        )
+    missing_mu = [f for f in MORRIS_MU_FACTORS if f not in factors]
+    if missing_mu:
+        raise ValueError(f"Missing mu factors: {missing_mu}")
+    if work.duplicated(subset=["factor", "output"]).any():
+        raise ValueError("Duplicated factor-output rows in Morris index table.")
+    if not np.isfinite(work["mu_star"].to_numpy(dtype=float)).all():
+        raise ValueError("Non-finite mu_star values found.")
+    if not np.isfinite(work["sigma"].to_numpy(dtype=float)).all():
+        raise ValueError("Non-finite sigma values found.")
+    if np.any(work["mu_star"].to_numpy(dtype=float) < 0.0):
+        raise ValueError("Negative mu_star values found.")
+    if np.any(work["sigma"].to_numpy(dtype=float) < 0.0):
+        raise ValueError("Negative sigma values found.")
+
+    n_traj = _manifest_int(manifest, "n_trajectories", "trajectories")
+    n_levels = _manifest_int(manifest, "num_levels", "levels")
+    n_eval = _manifest_int(manifest, "n_evaluations", "n_samples")
+    seed_raw = manifest.get("seed", manifest.get("random_seed"))
+    seed_fixed = seed_raw is not None and str(seed_raw).strip() != ""
+    seed_value: Optional[int] = None
+    if seed_fixed:
+        try:
+            seed_value = int(seed_raw)
+        except (TypeError, ValueError):
+            seed_fixed = False
+            seed_value = None
+
+    if n_traj != MORRIS_N_TRAJECTORIES:
+        raise ValueError(f"Manifest trajectories must be {MORRIS_N_TRAJECTORIES}, found {n_traj}.")
+    if n_levels != MORRIS_NUM_LEVELS:
+        raise ValueError(f"Manifest num_levels/levels must be {MORRIS_NUM_LEVELS}, found {n_levels}.")
+    if n_eval != MORRIS_N_TRAJECTORIES * (31 + 1):
+        raise ValueError(f"Manifest evaluations must be 2048, found {n_eval}.")
+    if not seed_fixed:
+        raise ValueError(
+            "Morris run seed was not fixed or recorded in mu_morris_manifest.json; "
+            "refusing to invent a seed."
+        )
+
+    meta = {
+        "n_factors": 31,
+        "n_outputs": 11,
+        "n_trajectories": int(n_traj),
+        "num_levels": int(n_levels),
+        "n_evaluations": int(n_eval),
+        "seed": int(seed_value) if seed_value is not None else None,
+        "seed_fixed": True,
+        "factor_order": factors,
+        "output_order": list(MORRIS_OUTPUT_NAMES),
+    }
+    return work, meta
+
+
+def build_morris_normalized_table(indices_df: pd.DataFrame) -> pd.DataFrame:
+    """Preserve raw indices; add visualization-only relative scales and among-31 ranks."""
+    rows: List[dict] = []
+    for output in MORRIS_OUTPUT_NAMES:
+        sub = indices_df[indices_df["output"] == output].copy()
+        if len(sub) != 31:
+            raise ValueError(f"Output {output} has {len(sub)} factors; expected 31.")
+        mu_vals = sub["mu_star"].to_numpy(dtype=float)
+        sig_vals = sub["sigma"].to_numpy(dtype=float)
+        mu_max = float(np.max(mu_vals))
+        sig_max = float(np.max(sig_vals))
+        if mu_max == 0.0:
+            rel_mu = np.zeros_like(mu_vals)
+        else:
+            rel_mu = mu_vals / mu_max
+        if sig_max == 0.0:
+            rel_sig = np.zeros_like(sig_vals)
+        else:
+            rel_sig = sig_vals / sig_max
+        mu_rank_s = sub["mu_star"].rank(method="min", ascending=False).astype(int)
+        sig_rank_s = sub["sigma"].rank(method="min", ascending=False).astype(int)
+        for i, (_, row) in enumerate(sub.iterrows()):
+            rows.append(
+                {
+                    "factor": str(row["factor"]),
+                    "output": str(output),
+                    "raw_mu_star": float(row["mu_star"]),
+                    "raw_sigma": float(row["sigma"]),
+                    "relative_mu_star": float(rel_mu[i]),
+                    "relative_sigma": float(rel_sig[i]),
+                    "mu_star_rank_among_31": int(mu_rank_s.iloc[i]),
+                    "sigma_rank_among_31": int(sig_rank_s.iloc[i]),
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def _plot_morris_mu_focused(normalized_df: pd.DataFrame, outdir: str) -> Tuple[str, str]:
+    import matplotlib.pyplot as plt
+
+    apply_matplotlib_style()
+    outputs = list(MORRIS_OUTPUT_NAMES)
+    out_labels = [MORRIS_OUTPUT_LABELS[o] for o in outputs]
+    mu_star_mat = (
+        normalized_df.pivot(index="factor", columns="output", values="relative_mu_star")
+        .reindex(index=list(MORRIS_MU_FACTORS), columns=outputs)
+        .to_numpy(dtype=float)
+    )
+    sigma_mat = (
+        normalized_df.pivot(index="factor", columns="output", values="relative_sigma")
+        .reindex(index=list(MORRIS_MU_FACTORS), columns=outputs)
+        .to_numpy(dtype=float)
+    )
+
+    fig, axes = plt.subplots(2, 1, figsize=(7.2, 6.8), constrained_layout=True)
+    for ax, mat, title in (
+        (axes[0], mu_star_mat, r"Relative $\mu^*$ (mu$_1$–mu$_5$)"),
+        (axes[1], sigma_mat, r"Relative $\sigma$ (mu$_1$–mu$_5$)"),
+    ):
+        im = ax.imshow(mat, aspect="equal", cmap=HEATMAP_SEQUENTIAL, vmin=0.0, vmax=1.0)
+        ax.set_title(title, fontsize=10)
+        ax.set_yticks(np.arange(len(MORRIS_MU_FACTORS)))
+        ax.set_yticklabels(list(MORRIS_MU_FACTORS), fontsize=8)
+        ax.set_xticks(np.arange(len(outputs)))
+        ax.set_xticklabels(out_labels, rotation=45, ha="right", fontsize=8)
+
+    cbar = fig.colorbar(im, ax=axes, fraction=0.035, pad=0.02)
+    cbar.set_label("Relative index (0–1)", fontsize=8)
+    cbar.ax.tick_params(labelsize=8)
+
+    png_path = os.path.join(outdir, "mu_morris_summary.png")
+    paths = save_figure(fig, png_path, dpi=600)
+    plt.close(fig)
+    return paths
+
+
+def _print_morris_manuscript_summary(normalized_df: pd.DataFrame, meta: dict) -> None:
+    mu_df = normalized_df[normalized_df["factor"].isin(MORRIS_MU_FACTORS)].copy()
+    seed = meta.get("seed")
+    seed_note = f"fixed seed = {seed}" if meta.get("seed_fixed") and seed is not None else "seed not fixed/recorded"
+
+    print("Morris manuscript summary")
+    print(f"  seed: {seed_note}")
+    print(
+        f"  factors={meta['n_factors']}, outputs={meta['n_outputs']}, "
+        f"trajectories={meta['n_trajectories']}, evaluations={meta['n_evaluations']}"
+    )
+
+    if mu_df.empty:
+        print("  mu_1..mu_5 block empty after filtering.")
+        return
+
+    imax = mu_df["relative_mu_star"].idxmax()
+    row_mu = mu_df.loc[imax]
+    print(
+        "  max relative mu_star among mu_1..mu_5: "
+        f"{float(row_mu['relative_mu_star']):.6g} "
+        f"(factor={row_mu['factor']}, output={row_mu['output']}, "
+        f"rank_among_31={int(row_mu['mu_star_rank_among_31'])})"
+    )
+    isig = mu_df["relative_sigma"].idxmax()
+    row_sig = mu_df.loc[isig]
+    print(
+        "  max relative sigma among mu_1..mu_5: "
+        f"{float(row_sig['relative_sigma']):.6g} "
+        f"(factor={row_sig['factor']}, output={row_sig['output']}, "
+        f"rank_among_31={int(row_sig['sigma_rank_among_31'])})"
+    )
+
+    n_top5 = 0
+    for output in MORRIS_OUTPUT_NAMES:
+        sub = mu_df[mu_df["output"] == output]
+        if not sub.empty and int(sub["mu_star_rank_among_31"].min()) <= 5:
+            n_top5 += 1
+    print(f"  outputs where any mu_i ranks in top 5 (of 31): {n_top5} / 11")
+    print(
+        "  Note: low relative/normalized effect does not by itself prove "
+        "that mu_i is biologically unimportant."
+    )
+
+
+def export_mu_morris_summary_from_saved(outdir: str) -> dict:
+    """Load saved raw Morris indices, validate, write normalized CSV + mu-focused figure."""
+    indices_path = resolve_morris_indices_path(outdir)
+    manifest = load_morris_manifest(outdir)
+    raw_df = pd.read_csv(indices_path)
+    indices_df, meta = validate_morris_indices_and_manifest(raw_df, manifest)
+    normalized_df = build_morris_normalized_table(indices_df)
+
+    norm_path = os.path.join(outdir, "mu_morris_normalized.csv")
+    normalized_df.to_csv(norm_path, index=False)
+
+    png_path, svg_path = _plot_morris_mu_focused(normalized_df, outdir)
+
+    artifacts = dict(manifest.get("artifacts") or {})
+    artifacts["mu_morris_summary.png"] = os.path.basename(png_path)
+    artifacts["mu_morris_summary.svg"] = os.path.basename(svg_path)
+    artifacts["mu_morris_normalized.csv"] = os.path.basename(norm_path)
+    manifest["artifacts"] = artifacts
+    write_json_manifest(outdir, MORRIS_MANIFEST_NAME, manifest)
+
+    print(f"Loaded raw Morris indices: {indices_path}")
+    print(f"Saved {norm_path}")
+    print(f"Saved {png_path}")
+    print(f"Saved {svg_path}")
+    _print_morris_manuscript_summary(normalized_df, meta)
+    return {
+        "indices_path": indices_path,
+        "normalized_path": norm_path,
+        "png_path": png_path,
+        "svg_path": svg_path,
+        "meta": meta,
+    }
+
+
+def _print_mu_factor_table(indices_df: pd.DataFrame) -> None:
+    mu_df = indices_df[indices_df["factor"].isin(MORRIS_MU_FACTORS)].copy()
+    rows = []
+    for output in MORRIS_OUTPUT_NAMES:
+        row = {"output": output}
+        for factor in MORRIS_MU_FACTORS:
+            sub = mu_df[(mu_df["output"] == output) & (mu_df["factor"] == factor)]
+            if sub.empty:
+                row[f"{factor}_mu_star"] = float("nan")
+                row[f"{factor}_sigma"] = float("nan")
+            else:
+                row[f"{factor}_mu_star"] = float(sub["mu_star"].iloc[0])
+                row[f"{factor}_sigma"] = float(sub["sigma"].iloc[0])
+        rows.append(row)
+    table = pd.DataFrame(rows)
+    with pd.option_context("display.max_columns", None, "display.width", 200, "display.float_format", "{:.6g}".format):
+        print(table.to_string(index=False))
+
+
+def run_mu_sensitivity(profile: ModelProfile, outdir: str, *, plot_only: bool = False) -> None:
+    """Morris EE analysis over the 31 raw-library factors; no dataset regen / no ML."""
+    os.makedirs(outdir, exist_ok=True)
+    if plot_only:
+        export_mu_morris_summary_from_saved(outdir)
+        return
+
+    try:
+        from SALib.analyze import morris as morris_analyze
+        from SALib.sample import morris as morris_sample
+    except ImportError as exc:  # pragma: no cover
+        raise ImportError("SALib is required for --mode mu_sensitivity: pip install SALib") from exc
+
+    names, bounds = morris_factor_bounds(profile)
+    problem = {"num_vars": len(names), "names": names, "bounds": bounds}
+
+    # Warm up Numba / integrator once before the Morris design loop.
+    _ = simulate_case(profile)
+
+    X = morris_sample.sample(
+        problem,
+        N=MORRIS_N_TRAJECTORIES,
+        num_levels=MORRIS_NUM_LEVELS,
+        seed=MORRIS_SEED,
+    )
+    Y = np.zeros((X.shape[0], len(MORRIS_OUTPUT_NAMES)), dtype=float)
+    for i in range(X.shape[0]):
+        Y[i] = evaluate_morris_sample(profile, X[i])
+        if (i + 1) % 256 == 0 or (i + 1) == X.shape[0]:
+            print(f"Morris evaluations: {i + 1:,}/{X.shape[0]:,}")
+
+    all_factor_rows = []
+    index_rows = []
+    for j, output_name in enumerate(MORRIS_OUTPUT_NAMES):
+        Si = morris_analyze.analyze(
+            problem,
+            X,
+            Y[:, j],
+            num_levels=MORRIS_NUM_LEVELS,
+            seed=MORRIS_SEED,
+            print_to_console=False,
+        )
+        for k, factor in enumerate(names):
+            row = {
+                "output": output_name,
+                "factor": factor,
+                "mu": float(Si["mu"][k]),
+                "mu_star": float(Si["mu_star"][k]),
+                "sigma": float(Si["sigma"][k]),
+                "mu_star_conf": float(Si["mu_star_conf"][k]),
+            }
+            all_factor_rows.append(row)
+            index_rows.append(
+                {
+                    "output": output_name,
+                    "factor": factor,
+                    "mu_star": row["mu_star"],
+                    "sigma": row["sigma"],
+                }
+            )
+
+    all_factors_df = pd.DataFrame(all_factor_rows)
+    indices_df = pd.DataFrame(index_rows)
+    all_path = os.path.join(outdir, "mu_morris_all_factors.csv")
+    indices_path = os.path.join(outdir, "mu_morris_indices.csv")
+    all_factors_df.to_csv(all_path, index=False)
+    indices_df.to_csv(indices_path, index=False)
+
+    manifest = {
+        "mode": "mu_sensitivity",
+        "method": "Morris elementary effects (SALib)",
+        "factor_names": names,
+        "bounds": {name: bound for name, bound in zip(names, bounds)},
+        "trajectories": MORRIS_N_TRAJECTORIES,
+        "n_trajectories": MORRIS_N_TRAJECTORIES,
+        "levels": MORRIS_NUM_LEVELS,
+        "num_levels": MORRIS_NUM_LEVELS,
+        "seed": MORRIS_SEED,
+        "git_commit": _git_commit_hash(),
+        "ode_profile": profile.name,
+        "n_factors": len(names),
+        "n_samples": int(X.shape[0]),
+        "n_evaluations": int(X.shape[0]),
+        "outputs": list(MORRIS_OUTPUT_NAMES),
+        "artifacts": {
+            "mu_morris_all_factors.csv": os.path.basename(all_path),
+            "mu_morris_indices.csv": os.path.basename(indices_path),
+        },
+        **profile_provenance(profile),
+    }
+    write_json_manifest(outdir, MORRIS_MANIFEST_NAME, manifest)
+
+    print(f"Saved {all_path}")
+    print(f"Saved {indices_path}")
+    print(f"Saved {os.path.join(outdir, MORRIS_MANIFEST_NAME)}")
+    print("mu1-mu5 Morris indices (mu_star, sigma) by output:")
+    _print_mu_factor_table(indices_df)
+
+    # Figure + normalized CSV are produced from the saved raw table (no invented values).
+    export_mu_morris_summary_from_saved(outdir)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Review-ready wound control simulation and ML pipeline")
-    parser.add_argument("--mode", choices=["representative", "generate_dataset", "train_compare"], default="representative")
+    parser.add_argument(
+        "--mode",
+        choices=["representative", "generate_dataset", "train_compare", "mu_sensitivity"],
+        default="representative",
+    )
     parser.add_argument(
         "--profile",
         default="paper_figure",
@@ -1137,6 +1676,11 @@ def main() -> None:
     parser.add_argument("--y_csv", default="y_targets.csv")
     parser.add_argument("--baseline", default="GBDT", choices=["GBDT", "XGBoost"])
     parser.add_argument("--sample_index", type=int, default=0)
+    parser.add_argument(
+        "--morris_plot_only",
+        action="store_true",
+        help="For --mode mu_sensitivity: rebuild figure/CSV from saved Morris indices only (no re-analysis).",
+    )
     args = parser.parse_args()
     os.makedirs(args.outdir, exist_ok=True)
 
@@ -1157,6 +1701,9 @@ def main() -> None:
 
     elif args.mode == "train_compare":
         train_compare(profile, args.x_csv, args.y_csv, args.baseline, args.sample_index, args.outdir)
+
+    elif args.mode == "mu_sensitivity":
+        run_mu_sensitivity(profile, args.outdir, plot_only=args.morris_plot_only)
 
 
 if __name__ == "__main__":
