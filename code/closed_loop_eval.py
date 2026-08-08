@@ -193,7 +193,7 @@ REPEATED_CLOSED_LOOP_METRICS: Tuple[str, ...] = (
 )
 
 FIG4_PANEL_ORDER: Tuple[Tuple[str, str, str], ...] = (
-    ("A", "fixed_umax_representative.png", "Representative trajectories at shared fixed Umax (illustrative only)"),
+    ("A", "fixed_umax_representative.png", "deterministic representative trajectories"),
     ("B", "fixed_umax_summary.png", "Fixed-Umax forward ODE summary (single point estimate per model)"),
     ("C", "fixed_umax_constraint_success.png", "Constraint success rates (optional if redundant)"),
 )
@@ -340,8 +340,8 @@ FIG5_REPRESENTATIVE_CONDITIONS: Tuple[str, ...] = (
     "TAR_optimized",
 )
 FIG5_PANEL_ORDER: Tuple[Tuple[str, str, str], ...] = (
-    ("A", "umax_score_landscape.png", "Per-case composite-penalty response landscape vs Umax (0–100)"),
-    ("B", "umax_objective_alignment.png", "Cross-objective preferred Umax inconsistency"),
+    ("A", "umax_score_landscape.png", "composite-penalty response landscape"),
+    ("B", "umax_constraint_feasibility.png", "constraint feasibility"),
     ("C", "umax_ode_ablation.png", "Illustrative ODE ablation trajectories"),
     ("D", "umax_summary_ablation.png", "Repeated ablation summary (mean ± 95% CI)"),
 )
@@ -612,9 +612,15 @@ def build_fig4_manifest_fields(
             panel, filename, desc,
             role="primary_manuscript_figure" if filename in FIG4_PRIMARY_FIGURES else "optional_manuscript_figure",
             input_sources={
-                "fixed_umax_representative.png": [FIXED_UMAX_TRAJECTORIES_CSV, FIG4_PLOT_MANIFEST_JSON],
-                "fixed_umax_summary.png": [FIXED_UMAX_REPEATED_STATS_CSV, FIXED_UMAX_SIGNIFICANCE_CSV],
-                "fixed_umax_constraint_success.png": [FIXED_UMAX_REPEATED_STATS_CSV],
+                "fixed_umax_representative.png": [
+                    f"fixed_umax_validation/{FIXED_UMAX_TRAJECTORIES_CSV}",
+                    f"fixed_umax_validation/{FIG4_PLOT_MANIFEST_JSON}",
+                ],
+                "fixed_umax_summary.png": [
+                    f"fixed_umax_validation/{FIXED_UMAX_REPEATED_STATS_CSV}",
+                    f"fixed_umax_validation/{FIXED_UMAX_SIGNIFICANCE_CSV}",
+                ],
+                "fixed_umax_constraint_success.png": [f"fixed_umax_validation/{FIXED_UMAX_REPEATED_STATS_CSV}"],
             }.get(filename, []),
             n_repeats=1,
             umax_setting="fixed_paper_figure_profile",
@@ -669,15 +675,30 @@ def build_fig5_manifest_fields(*, n_repeats: int, significance_for_manuscript: b
             panel, filename, desc,
             role="primary_manuscript_figure",
             input_sources={
-                "umax_score_landscape.png": ["umax_score_landscape_curves.csv", "umax_selected_umax_distribution.csv"],
-                "umax_objective_alignment.png": ["umax_objective_alignment.csv"],
-                "umax_ode_ablation.png": ["umax_ablation_representative_trajectories.csv", FIG5_PLOT_MANIFEST_JSON],
-                "umax_summary_ablation.png": ["umax_ablation_repeated_plot_stats.csv", "umax_ablation_significance_annotations.csv"],
+                "umax_score_landscape.png": [
+                    "umax_optimization/umax_score_landscape_curves.csv",
+                    "umax_optimization/umax_selected_umax_distribution.csv",
+                ],
+                "umax_constraint_feasibility.png": [
+                    "umax_optimization/umax_response_landscape.csv",
+                    "umax_optimization/umax_optimization_u_candidates.csv",
+                ],
+                "umax_ode_ablation.png": [
+                    "umax_optimization/umax_ablation_representative_trajectories.csv",
+                    f"umax_optimization/{FIG5_PLOT_MANIFEST_JSON}",
+                ],
+                "umax_summary_ablation.png": [
+                    "umax_optimization/umax_ablation_repeated_plot_stats.csv",
+                    "umax_optimization/umax_ablation_significance_annotations.csv",
+                ],
+                "umax_summary_ablation_composite_supplementary.png": [
+                    "umax_optimization/umax_ablation_repeated_plot_stats.csv",
+                ],
             }.get(filename, []),
             n_repeats=n_repeats,
             umax_setting={
                 "umax_score_landscape.png": "grid_scan_0_to_100_median_band",
-                "umax_objective_alignment.png": "per_objective_distribution_with_sampled_spaghetti",
+                "umax_constraint_feasibility.png": "constraint_feasibility_fraction_by_u",
                 "umax_ode_ablation.png": "TAR_training_median_tuned_global_optimized_illustrative",
                 "umax_summary_ablation.png": "TAR_policy_ablation_three_conditions",
             }.get(filename, "optimized_and_training_fixed_policy_ablation"),

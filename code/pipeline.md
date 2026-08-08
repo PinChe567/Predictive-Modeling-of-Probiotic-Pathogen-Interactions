@@ -228,7 +228,19 @@ python .\figure_audit.py --mode generate_plots --groups ode --ode_outdir .\resul
 
 **When:** after **step 4** (or anytime the ODE profile is available). Does **not** regenerate the supervised dataset and does **not** train any ML model. Not required for the manuscript mainline (steps 5–11).
 
-**Goal:** SALib Morris elementary-effects analysis over the 31 raw-library factors (including μ₁–μ₅), using the formal raw-library parameter bounds and `simulate_case`.
+**Goal:** SALib Morris elementary-effects analysis over the **31** raw-library factors (B0, k, γ_S, ρ, μ, Umax, Tthr), using formal raw-library bounds and `simulate_case`. Relative μ*/σ and ranks are always taken **among all 31 factors**. Summary heatmaps show only μ₁–μ₅.
+
+**Output definitions** (manuscript; final 12 h = terminal window on `res.times`):
+
+| Output | Definition |
+| ------ | ---------- |
+| `LR1`–`LR5` | `log10(B0_i / median(B_total,i over final 12 h))`; denominator clipped at 1 CFU/mL |
+| `Bterminal` | median over final 12 h of `sum_i B_total,i(t)` |
+| `terminal_stress_response_fraction` | median over final 12 h of `sum(B_T)/sum(B_total)` |
+| `time_averaged_stress_response_fraction` | trapezoidal integral of `sum(B_T)/sum(B_total)` over the full horizon, divided by treatment duration |
+| `dose_count`, `cumulative_dosage`, `P_AUC` | closed-loop dose count, cumulative dosage, plasma AUC |
+
+Near-invariant outputs (observed range abs tol `1e-8` or rel tol `1e-10`) stay in raw tables and `mu_morris_output_samples.csv`, but are excluded from relative normalization/ranking and plotted as gray **N/A**.
 
 ```powershell
 python .\multi_pathogen_simulator.py `
@@ -237,9 +249,26 @@ python .\multi_pathogen_simulator.py `
   --outdir .\results\mu_sensitivity
 ```
 
-**Outputs:** `mu_morris_all_factors.csv`, `mu_morris_indices.csv`, `mu_morris_summary.png` + `.svg`, `mu_morris_manifest.json` under `results\mu_sensitivity\`
+Rebuild figure + normalized CSV from saved indices/samples (no re-analysis):
 
-**Settings:** 64 trajectories, 4 grid levels, seed `2026`.
+```powershell
+python .\multi_pathogen_simulator.py `
+  --mode mu_sensitivity `
+  --morris_plot_only `
+  --outdir .\results\mu_sensitivity
+```
+
+**Outputs** under `results\mu_sensitivity\`:
+
+| File | Role |
+| ---- | ---- |
+| `mu_morris_output_samples.csv` | All 2048 evaluated output vectors (range audit) |
+| `mu_morris_all_factors.csv` / `mu_morris_indices.csv` | Raw Morris μ, μ*, σ (all factors × outputs) |
+| `mu_morris_normalized.csv` | Relative μ*/σ and ranks among 31 factors; `near_invariant` flag |
+| `mu_morris_summary.png` + `.svg` | μ₁–μ₅ heatmaps (relative; dynamic color range; N/A for near-invariant) |
+| `mu_morris_manifest.json` | Definitions, observed ranges, near-invariant status, design metadata |
+
+**Settings:** 31 factors, 64 trajectories, 4 levels, seed `2026` → **2048** evaluations (`64 × (31+1)`).
 
 ---
 

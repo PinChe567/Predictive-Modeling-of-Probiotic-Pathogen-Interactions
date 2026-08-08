@@ -1136,35 +1136,59 @@ def row_from_case(B0, k_arr, gamma_arr, rho_arr, mu_arr, u_max, T_thr) -> np.nda
 MORRIS_N_TRAJECTORIES = 64
 MORRIS_NUM_LEVELS = 4
 MORRIS_SEED = 2026
+MORRIS_N_FACTORS = 31
+MORRIS_N_EVALUATIONS = MORRIS_N_TRAJECTORIES * (MORRIS_N_FACTORS + 1)  # 2048
+MORRIS_ABS_TOL = 1e-8
+MORRIS_REL_TOL = 1e-10
 MORRIS_MU_FACTORS = [f"mu_{i}" for i in range(1, N_STRAINS + 1)]
-MORRIS_OUTPUT_NAMES = (
-    [
-        "terminal_stress_response_fraction",
-        "dose_count",
-        "cumulative_dosage",
-    ]
-    + [f"LR{i}" for i in range(1, N_STRAINS + 1)]
-    + [
-        "mean_LR",
-        "Bterminal",
-        "PAUC",
-    ]
+MORRIS_OUTPUT_NAMES: Tuple[str, ...] = (
+    "LR1",
+    "LR2",
+    "LR3",
+    "LR4",
+    "LR5",
+    "Bterminal",
+    "terminal_stress_response_fraction",
+    "time_averaged_stress_response_fraction",
+    "dose_count",
+    "cumulative_dosage",
+    "P_AUC",
 )
-MORRIS_OUTPUT_LABELS = {
-    "terminal_stress_response_fraction": "Stress fraction",
-    "dose_count": "Dose count",
-    "cumulative_dosage": "Total dose",
-    "LR1": "LR1",
-    "LR2": "LR2",
-    "LR3": "LR3",
-    "LR4": "LR4",
-    "LR5": "LR5",
-    "mean_LR": "Mean LR",
-    "Bterminal": "Bterminal",
-    "PAUC": "P_AUC",
+MORRIS_OUTPUT_DEFINITIONS: Dict[str, str] = {
+    "LR1": "log10(B0_1 / median(B_total_1 over final 12 h)); denom clipped at 1 CFU/mL",
+    "LR2": "log10(B0_2 / median(B_total_2 over final 12 h)); denom clipped at 1 CFU/mL",
+    "LR3": "log10(B0_3 / median(B_total_3 over final 12 h)); denom clipped at 1 CFU/mL",
+    "LR4": "log10(B0_4 / median(B_total_4 over final 12 h)); denom clipped at 1 CFU/mL",
+    "LR5": "log10(B0_5 / median(B_total_5 over final 12 h)); denom clipped at 1 CFU/mL",
+    "Bterminal": "median over final 12 h of sum_i B_total_i(t)",
+    "terminal_stress_response_fraction": (
+        "median over final 12 h of sum_i B_T,i(t) / sum_i B_total,i(t)"
+    ),
+    "time_averaged_stress_response_fraction": (
+        "trapezoidal integral of sum_i B_T,i / sum_i B_total over full horizon, "
+        "divided by treatment duration"
+    ),
+    "dose_count": "number of dose events in the closed-loop run",
+    "cumulative_dosage": "sum of administered dose amounts (dose_count * u_max)",
+    "P_AUC": "AUC of plasma concentration over the treatment horizon",
+}
+MORRIS_OUTPUT_DISPLAY: Dict[str, str] = {
+    "LR1": r"$LR_1$",
+    "LR2": r"$LR_2$",
+    "LR3": r"$LR_3$",
+    "LR4": r"$LR_4$",
+    "LR5": r"$LR_5$",
+    "Bterminal": r"$B_{\mathrm{terminal}}$",
+    "terminal_stress_response_fraction": r"$f_{\mathrm{stress}}^{\mathrm{term}}$",
+    "time_averaged_stress_response_fraction": r"$f_{\mathrm{stress}}^{\mathrm{avg}}$",
+    "dose_count": r"$N_{\mathrm{dose}}$",
+    "cumulative_dosage": r"$D_{\mathrm{cum}}$",
+    "P_AUC": r"$P_{\mathrm{AUC}}$",
 }
 MORRIS_INDICES_CANDIDATES = ("mu_morris_indices.csv", "mu_morris_all_factors.csv")
 MORRIS_MANIFEST_NAME = "mu_morris_manifest.json"
+MORRIS_OUTPUT_SAMPLES_NAME = "mu_morris_output_samples.csv"
+MORRIS_NORMALIZED_NAME = "mu_morris_normalized.csv"
 
 
 def _git_commit_hash() -> Optional[str]:
@@ -1216,8 +1240,7 @@ def morris_factor_bounds(profile: ModelProfile) -> Tuple[List[str], List[List[fl
         names.append(f"Tthr_{i + 1}")
         bounds.append([t_lo, t_hi])
 
-    if len(names) != 31:
-        raise RuntimeError(f"Expected 31 Morris factors, got {len(names)}.")
+    assert len(names) == MORRIS_N_FACTORS, f"Expected {MORRIS_N_FACTORS} Morris factors, got {len(names)}."
     return names, bounds
 
 
@@ -1233,36 +1256,117 @@ def _unpack_morris_params(x: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.nda
     return B0, k_arr, gamma_arr, rho_arr, mu_arr, u_max, T_thr
 
 
-def morris_outputs_from_simulation(res: SimulationResult) -> Dict[str, float]:
-    """Map a simulate_case result onto the Morris response vector."""
-    b_terminal_vec = np.asarray(res.B_total[-1], dtype=float)
-    b_t_terminal = np.asarray(res.B_T[-1], dtype=float)
-    b_sum = float(b_terminal_vec.sum())
-    if b_sum > 0.0:
-        stress_frac = float(b_t_terminal.sum() / b_sum)
-    else:
-        stress_frac = 0.0
-    lr = np.asarray(res.LR, dtype=float)
+def morris_outputs_from_simulation(res: SimulationResult, B0: np.ndarray) -> Dict[str, float]:
+    """Map one closed-loop simulation to Morris scalar outputs (manuscript definitions).
+
+    Terminal window = final 12 h of ``res.times``.
+    LR_i = log10(B0_i / median(B_total,i over terminal)), denom clipped at 1 CFU/mL.
+    Bterminal = median of summed total pathogen burden over the final 12 h.
+    terminal_stress_response_fraction = median of sum(B_T)/sum(B_total) over final 12 h.
+    time_averaged_stress_response_fraction = trapezoidal integral of that ratio over
+    the full horizon, divided by treatment duration.
+    """
+    B0 = np.asarray(B0, dtype=float).reshape(N_STRAINS)
+    times = np.asarray(res.times, dtype=float)
+    if times.size < 2:
+        raise ValueError("Simulation returned fewer than 2 time points")
+    t_end = float(times[-1])
+    terminal_mask = times >= (t_end - 12.0)
+    if not np.any(terminal_mask):
+        terminal_mask = np.zeros_like(times, dtype=bool)
+        terminal_mask[-1] = True
+
+    Bt = np.asarray(res.B_total, dtype=float)
+    BT = np.asarray(res.B_T, dtype=float)
+    if Bt.ndim != 2 or Bt.shape[1] != N_STRAINS:
+        raise ValueError(f"Unexpected B_total shape {Bt.shape}")
+
+    Bt_term = Bt[terminal_mask]
+    BT_term = BT[terminal_mask]
+    Bt_term_med = np.median(Bt_term, axis=0)
+    denom = np.maximum(Bt_term_med, 1.0)
+    LR = np.log10(np.maximum(B0, 1.0) / denom)
+
+    B_sum_term = np.sum(Bt_term, axis=1)
+    Bterminal = float(np.median(B_sum_term))
+
+    eps = 1e-30
+    stress_term = np.sum(BT_term, axis=1) / np.maximum(np.sum(Bt_term, axis=1), eps)
+    terminal_stress = float(np.median(stress_term))
+
+    stress_full = np.sum(BT, axis=1) / np.maximum(np.sum(Bt, axis=1), eps)
+    horizon = max(t_end - float(times[0]), 1e-12)
+    time_avg_stress = float(np.trapezoid(stress_full, times) / horizon)
+
     return {
-        "terminal_stress_response_fraction": stress_frac,
+        "LR1": float(LR[0]),
+        "LR2": float(LR[1]),
+        "LR3": float(LR[2]),
+        "LR4": float(LR[3]),
+        "LR5": float(LR[4]),
+        "Bterminal": Bterminal,
+        "terminal_stress_response_fraction": terminal_stress,
+        "time_averaged_stress_response_fraction": time_avg_stress,
         "dose_count": float(res.dose_count),
         "cumulative_dosage": float(res.total_dosage),
-        "LR1": float(lr[0]),
-        "LR2": float(lr[1]),
-        "LR3": float(lr[2]),
-        "LR4": float(lr[3]),
-        "LR5": float(lr[4]),
-        "mean_LR": float(np.mean(lr)),
-        "Bterminal": b_sum,
-        "PAUC": float(res.P_AUC),
+        "P_AUC": float(res.P_AUC),
     }
 
 
-def evaluate_morris_sample(profile: ModelProfile, x: np.ndarray) -> np.ndarray:
+def _assert_terminal_definitions(res: SimulationResult, B0: np.ndarray, outs: Dict[str, float]) -> None:
+    """Assert terminal LR and Bterminal use the final-12-h median."""
+    times = np.asarray(res.times, dtype=float)
+    t_end = float(times[-1])
+    terminal_mask = times >= (t_end - 12.0)
+    if not np.any(terminal_mask):
+        terminal_mask = np.zeros_like(times, dtype=bool)
+        terminal_mask[-1] = True
+    Bt = np.asarray(res.B_total, dtype=float)
+    Bt_term = Bt[terminal_mask]
+    Bt_med = np.median(Bt_term, axis=0)
+    denom = np.maximum(Bt_med, 1.0)
+    B0v = np.asarray(B0, dtype=float).reshape(N_STRAINS)
+    LR_ref = np.log10(np.maximum(B0v, 1.0) / denom)
+    Bterm_ref = float(np.median(np.sum(Bt_term, axis=1)))
+    for i in range(N_STRAINS):
+        assert abs(float(outs[f"LR{i + 1}"]) - float(LR_ref[i])) <= 1e-9 * (1.0 + abs(float(LR_ref[i]))), (
+            f"LR{i + 1} does not match final-12-h median definition"
+        )
+    assert abs(float(outs["Bterminal"]) - Bterm_ref) <= 1e-9 * (1.0 + abs(Bterm_ref)), (
+        "Bterminal does not match final-12-h median of summed burden"
+    )
+
+
+def evaluate_morris_sample(
+    profile: ModelProfile,
+    x: np.ndarray,
+    *,
+    check_definitions: bool = False,
+) -> np.ndarray:
     B0, k_arr, gamma_arr, rho_arr, mu_arr, u_max, T_thr = _unpack_morris_params(x)
     res = simulate_case(profile, B0, k_arr, gamma_arr, rho_arr, mu_arr, u_max, T_thr)
-    outs = morris_outputs_from_simulation(res)
+    outs = morris_outputs_from_simulation(res, B0)
+    if check_definitions:
+        _assert_terminal_definitions(res, B0, outs)
+    for name in MORRIS_OUTPUT_NAMES:
+        if not np.isfinite(outs[name]):
+            raise RuntimeError(f"Non-finite Morris output {name}={outs[name]}")
     return np.array([outs[name] for name in MORRIS_OUTPUT_NAMES], dtype=float)
+
+
+def _is_near_invariant(
+    y: np.ndarray,
+    *,
+    abs_tol: float = MORRIS_ABS_TOL,
+    rel_tol: float = MORRIS_REL_TOL,
+) -> bool:
+    y = np.asarray(y, dtype=float).ravel()
+    finite = y[np.isfinite(y)]
+    if finite.size == 0:
+        return True
+    span = float(np.max(finite) - np.min(finite))
+    scale = max(abs(float(np.median(finite))), 1.0)
+    return bool(span <= abs_tol or span <= rel_tol * scale)
 
 
 def resolve_morris_indices_path(outdir: str) -> str:
@@ -1318,10 +1422,7 @@ def validate_morris_indices_and_manifest(
 
     factors = list(dict.fromkeys(work["factor"].tolist()))
     outputs = list(dict.fromkeys(work["output"].tolist()))
-    if len(factors) != 31:
-        raise ValueError(f"Expected exactly 31 factors, found {len(factors)}.")
-    if len(outputs) != 11:
-        raise ValueError(f"Expected exactly 11 outputs, found {len(outputs)}.")
+    assert len(factors) == MORRIS_N_FACTORS, f"Expected exactly {MORRIS_N_FACTORS} factors, found {len(factors)}."
     if set(outputs) != set(MORRIS_OUTPUT_NAMES):
         raise ValueError(
             "Output names do not match the Morris analysis set. "
@@ -1359,8 +1460,7 @@ def validate_morris_indices_and_manifest(
         raise ValueError(f"Manifest trajectories must be {MORRIS_N_TRAJECTORIES}, found {n_traj}.")
     if n_levels != MORRIS_NUM_LEVELS:
         raise ValueError(f"Manifest num_levels/levels must be {MORRIS_NUM_LEVELS}, found {n_levels}.")
-    if n_eval != MORRIS_N_TRAJECTORIES * (31 + 1):
-        raise ValueError(f"Manifest evaluations must be 2048, found {n_eval}.")
+    assert n_eval == MORRIS_N_EVALUATIONS, f"Manifest evaluations must be {MORRIS_N_EVALUATIONS}, found {n_eval}."
     if not seed_fixed:
         raise ValueError(
             "Morris run seed was not fixed or recorded in mu_morris_manifest.json; "
@@ -1368,8 +1468,8 @@ def validate_morris_indices_and_manifest(
         )
 
     meta = {
-        "n_factors": 31,
-        "n_outputs": 11,
+        "n_factors": MORRIS_N_FACTORS,
+        "n_outputs": len(MORRIS_OUTPUT_NAMES),
         "n_trajectories": int(n_traj),
         "num_levels": int(n_levels),
         "n_evaluations": int(n_eval),
@@ -1381,86 +1481,172 @@ def validate_morris_indices_and_manifest(
     return work, meta
 
 
-def build_morris_normalized_table(indices_df: pd.DataFrame) -> pd.DataFrame:
-    """Preserve raw indices; add visualization-only relative scales and among-31 ranks."""
+def build_morris_normalized_table(
+    indices_df: pd.DataFrame,
+    near_invariant: Dict[str, bool],
+) -> pd.DataFrame:
+    """Preserve raw indices; relative scales/ranks among all 31 factors.
+
+    Near-invariant outputs retain raw values but relative/rank columns are NaN and
+    marked near_invariant=True (excluded from relative normalization and ranking).
+    """
     rows: List[dict] = []
     for output in MORRIS_OUTPUT_NAMES:
         sub = indices_df[indices_df["output"] == output].copy()
-        if len(sub) != 31:
-            raise ValueError(f"Output {output} has {len(sub)} factors; expected 31.")
+        if len(sub) != MORRIS_N_FACTORS:
+            raise ValueError(f"Output {output} has {len(sub)} factors; expected {MORRIS_N_FACTORS}.")
+        inv = bool(near_invariant.get(str(output), False))
         mu_vals = sub["mu_star"].to_numpy(dtype=float)
         sig_vals = sub["sigma"].to_numpy(dtype=float)
-        mu_max = float(np.max(mu_vals))
-        sig_max = float(np.max(sig_vals))
-        if mu_max == 0.0:
-            rel_mu = np.zeros_like(mu_vals)
+        if inv:
+            rel_mu = np.full_like(mu_vals, np.nan, dtype=float)
+            rel_sig = np.full_like(sig_vals, np.nan, dtype=float)
+            mu_ranks = np.full(len(sub), np.nan, dtype=float)
+            sig_ranks = np.full(len(sub), np.nan, dtype=float)
         else:
-            rel_mu = mu_vals / mu_max
-        if sig_max == 0.0:
-            rel_sig = np.zeros_like(sig_vals)
-        else:
-            rel_sig = sig_vals / sig_max
-        mu_rank_s = sub["mu_star"].rank(method="min", ascending=False).astype(int)
-        sig_rank_s = sub["sigma"].rank(method="min", ascending=False).astype(int)
+            mu_max = float(np.max(mu_vals))
+            sig_max = float(np.max(sig_vals))
+            rel_mu = np.zeros_like(mu_vals) if mu_max == 0.0 else (mu_vals / mu_max)
+            rel_sig = np.zeros_like(sig_vals) if sig_max == 0.0 else (sig_vals / sig_max)
+            mu_ranks = sub["mu_star"].rank(method="min", ascending=False).to_numpy(dtype=float)
+            sig_ranks = sub["sigma"].rank(method="min", ascending=False).to_numpy(dtype=float)
+            assert len(mu_ranks) == MORRIS_N_FACTORS
+            assert np.all(np.isfinite(mu_ranks))
+
         for i, (_, row) in enumerate(sub.iterrows()):
+            if inv:
+                assert not np.isfinite(mu_ranks[i]), (
+                    "near-invariant output must not receive a numerical relative rank"
+                )
             rows.append(
                 {
                     "factor": str(row["factor"]),
                     "output": str(output),
                     "raw_mu_star": float(row["mu_star"]),
                     "raw_sigma": float(row["sigma"]),
-                    "relative_mu_star": float(rel_mu[i]),
-                    "relative_sigma": float(rel_sig[i]),
-                    "mu_star_rank_among_31": int(mu_rank_s.iloc[i]),
-                    "sigma_rank_among_31": int(sig_rank_s.iloc[i]),
+                    "relative_mu_star": (float(rel_mu[i]) if np.isfinite(rel_mu[i]) else np.nan),
+                    "relative_sigma": (float(rel_sig[i]) if np.isfinite(rel_sig[i]) else np.nan),
+                    "mu_star_rank_among_31": (float(mu_ranks[i]) if np.isfinite(mu_ranks[i]) else np.nan),
+                    "sigma_rank_among_31": (float(sig_ranks[i]) if np.isfinite(sig_ranks[i]) else np.nan),
+                    "near_invariant": bool(inv),
                 }
             )
-    return pd.DataFrame(rows)
+    out_df = pd.DataFrame(rows)
+    # Final assertion: no near-invariant output has a numerical relative rank
+    inv_rows = out_df[out_df["near_invariant"].astype(bool)]
+    if not inv_rows.empty:
+        assert inv_rows["mu_star_rank_among_31"].isna().all()
+        assert inv_rows["sigma_rank_among_31"].isna().all()
+        assert inv_rows["relative_mu_star"].isna().all()
+        assert inv_rows["relative_sigma"].isna().all()
+    return out_df
 
 
-def _plot_morris_mu_focused(normalized_df: pd.DataFrame, outdir: str) -> Tuple[str, str]:
+def _plot_morris_mu_focused(
+    normalized_df: pd.DataFrame,
+    outdir: str,
+    *,
+    near_invariant: Dict[str, bool],
+) -> Tuple[str, str]:
+    """Rewrite mu_morris_summary.png/SVG in place: mu_1–mu_5 relative effects."""
     import matplotlib.pyplot as plt
 
     apply_matplotlib_style()
     outputs = list(MORRIS_OUTPUT_NAMES)
-    out_labels = [MORRIS_OUTPUT_LABELS[o] for o in outputs]
-    mu_star_mat = (
-        normalized_df.pivot(index="factor", columns="output", values="relative_mu_star")
-        .reindex(index=list(MORRIS_MU_FACTORS), columns=outputs)
-        .to_numpy(dtype=float)
-    )
-    sigma_mat = (
-        normalized_df.pivot(index="factor", columns="output", values="relative_sigma")
-        .reindex(index=list(MORRIS_MU_FACTORS), columns=outputs)
-        .to_numpy(dtype=float)
-    )
+    assert "time_averaged_stress_response_fraction" in outputs
+    assert "terminal_stress_response_fraction" in outputs
+    xlabels = [MORRIS_OUTPUT_DISPLAY.get(o, o) for o in outputs]
+    ylabels = [rf"$\mu_{{{i}}}$" for i in range(1, 6)]
 
-    fig, axes = plt.subplots(2, 1, figsize=(7.2, 6.8), constrained_layout=True)
-    for ax, mat, title in (
-        (axes[0], mu_star_mat, r"Relative $\mu^*$ (mu$_1$–mu$_5$)"),
-        (axes[1], sigma_mat, r"Relative $\sigma$ (mu$_1$–mu$_5$)"),
+    def _mat(col: str) -> np.ndarray:
+        M = np.full((len(MORRIS_MU_FACTORS), len(outputs)), np.nan, dtype=float)
+        for j, out in enumerate(outputs):
+            if near_invariant.get(str(out), False):
+                continue
+            sub = normalized_df[
+                (normalized_df["output"] == out) & (normalized_df["factor"].isin(MORRIS_MU_FACTORS))
+            ]
+            for i, f in enumerate(MORRIS_MU_FACTORS):
+                hit = sub[sub["factor"] == f]
+                if not hit.empty:
+                    M[i, j] = float(hit.iloc[0][col])
+        return M
+
+    M_mu = _mat("relative_mu_star")
+    M_sig = _mat("relative_sigma")
+    finite_vals = np.concatenate(
+        [M_mu[np.isfinite(M_mu)].ravel(), M_sig[np.isfinite(M_sig)].ravel()]
+    )
+    if finite_vals.size == 0:
+        vmax = 1.0
+    else:
+        vmax = float(np.nanmax(finite_vals))
+        if not np.isfinite(vmax) or vmax <= 0:
+            vmax = 1.0
+        # Dynamic range: do not force 0–1 when all meaningful effects are small.
+        if vmax < 0.06:
+            vmax = max(vmax * 1.15, 1e-12)
+        else:
+            vmax = max(vmax, 1e-12)
+
+    fig_w = max(14.0, 1.15 * len(outputs) + 4.0)
+    fig, axes = plt.subplots(1, 2, figsize=(fig_w, 4.8), constrained_layout=True)
+    cmap = plt.get_cmap(HEATMAP_SEQUENTIAL).copy()
+    cmap.set_bad("#bdbdbd")
+
+    for ax, M, title in (
+        (axes[0], M_mu, r"Relative $\mu^\star$ (max among all 31 factors)"),
+        (axes[1], M_sig, r"Relative $\sigma$ (max among all 31 factors)"),
     ):
-        im = ax.imshow(mat, aspect="equal", cmap=HEATMAP_SEQUENTIAL, vmin=0.0, vmax=1.0)
-        ax.set_title(title, fontsize=10)
-        ax.set_yticks(np.arange(len(MORRIS_MU_FACTORS)))
-        ax.set_yticklabels(list(MORRIS_MU_FACTORS), fontsize=8)
+        masked = np.ma.masked_invalid(M)
+        im = ax.imshow(masked, aspect="auto", cmap=cmap, vmin=0.0, vmax=vmax)
         ax.set_xticks(np.arange(len(outputs)))
-        ax.set_xticklabels(out_labels, rotation=45, ha="right", fontsize=8)
+        ax.set_xticklabels(xlabels, rotation=35, ha="right", fontsize=9)
+        ax.set_yticks(np.arange(len(MORRIS_MU_FACTORS)))
+        ax.set_yticklabels(ylabels, fontsize=10)
+        ax.set_title(title, fontsize=11)
+        for i in range(M.shape[0]):
+            for j in range(M.shape[1]):
+                out = outputs[j]
+                # Annotate only near-invariant / missing cells; omit numeric labels.
+                if near_invariant.get(str(out), False) or not np.isfinite(M[i, j]):
+                    ax.text(j, i, "N/A", ha="center", va="center", color="#424242", fontsize=8)
+        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
 
-    cbar = fig.colorbar(im, ax=axes, fraction=0.035, pad=0.02)
-    cbar.set_label("Relative index (0–1)", fontsize=8)
-    cbar.ax.tick_params(labelsize=8)
-
+    fig.suptitle(
+        r"Morris elementary effects for $\mu_1$–$\mu_5$ (relative to max over all 31 factors)",
+        fontsize=12,
+    )
     png_path = os.path.join(outdir, "mu_morris_summary.png")
     paths = save_figure(fig, png_path, dpi=600)
     plt.close(fig)
     return paths
 
 
-def _print_morris_manuscript_summary(normalized_df: pd.DataFrame, meta: dict) -> None:
-    mu_df = normalized_df[normalized_df["factor"].isin(MORRIS_MU_FACTORS)].copy()
+def _detect_near_invariant_from_samples(outdir: str) -> Dict[str, bool]:
+    samples_path = os.path.join(outdir, MORRIS_OUTPUT_SAMPLES_NAME)
+    near_invariant = {o: False for o in MORRIS_OUTPUT_NAMES}
+    if not os.path.isfile(samples_path):
+        return near_invariant
+    df_y = pd.read_csv(samples_path)
+    for o in MORRIS_OUTPUT_NAMES:
+        if o in df_y.columns:
+            near_invariant[o] = _is_near_invariant(df_y[o].to_numpy(dtype=float))
+    return near_invariant
+
+
+def _print_morris_manuscript_summary(
+    normalized_df: pd.DataFrame,
+    meta: dict,
+    near_invariant: Dict[str, bool],
+) -> None:
+    mu_df = normalized_df[
+        (~normalized_df["near_invariant"].astype(bool))
+        & (normalized_df["factor"].isin(MORRIS_MU_FACTORS))
+    ].copy()
     seed = meta.get("seed")
     seed_note = f"fixed seed = {seed}" if meta.get("seed_fixed") and seed is not None else "seed not fixed/recorded"
+    n_inv = sum(1 for v in near_invariant.values() if v)
 
     print("Morris manuscript summary")
     print(f"  seed: {seed_note}")
@@ -1468,9 +1654,9 @@ def _print_morris_manuscript_summary(normalized_df: pd.DataFrame, meta: dict) ->
         f"  factors={meta['n_factors']}, outputs={meta['n_outputs']}, "
         f"trajectories={meta['n_trajectories']}, evaluations={meta['n_evaluations']}"
     )
-
-    if mu_df.empty:
-        print("  mu_1..mu_5 block empty after filtering.")
+    print(f"  near-invariant outputs: {n_inv}")
+    if mu_df.empty or not np.isfinite(mu_df["relative_mu_star"]).any():
+        print("  mu_1..mu_5 block empty after filtering near-invariant outputs.")
         return
 
     imax = mu_df["relative_mu_star"].idxmax()
@@ -1489,17 +1675,13 @@ def _print_morris_manuscript_summary(normalized_df: pd.DataFrame, meta: dict) ->
         f"(factor={row_sig['factor']}, output={row_sig['output']}, "
         f"rank_among_31={int(row_sig['sigma_rank_among_31'])})"
     )
-
+    meaningful = [o for o in MORRIS_OUTPUT_NAMES if not near_invariant.get(o, False)]
     n_top5 = 0
-    for output in MORRIS_OUTPUT_NAMES:
+    for output in meaningful:
         sub = mu_df[mu_df["output"] == output]
         if not sub.empty and int(sub["mu_star_rank_among_31"].min()) <= 5:
             n_top5 += 1
-    print(f"  outputs where any mu_i ranks in top 5 (of 31): {n_top5} / 11")
-    print(
-        "  Note: low relative/normalized effect does not by itself prove "
-        "that mu_i is biologically unimportant."
-    )
+    print(f"  outputs where any mu_i ranks in top 5 (of 31): {n_top5} / {len(meaningful)}")
 
 
 def export_mu_morris_summary_from_saved(outdir: str) -> dict:
@@ -1508,31 +1690,44 @@ def export_mu_morris_summary_from_saved(outdir: str) -> dict:
     manifest = load_morris_manifest(outdir)
     raw_df = pd.read_csv(indices_path)
     indices_df, meta = validate_morris_indices_and_manifest(raw_df, manifest)
-    normalized_df = build_morris_normalized_table(indices_df)
 
-    norm_path = os.path.join(outdir, "mu_morris_normalized.csv")
+    near_invariant = _detect_near_invariant_from_samples(outdir)
+    # Prefer ranges recorded in the manifest when samples CSV is absent.
+    if "near_invariant_outputs" in manifest and isinstance(manifest["near_invariant_outputs"], dict):
+        for k, v in manifest["near_invariant_outputs"].items():
+            if k in near_invariant:
+                near_invariant[str(k)] = bool(v) or near_invariant[str(k)]
+
+    normalized_df = build_morris_normalized_table(indices_df, near_invariant)
+    norm_path = os.path.join(outdir, MORRIS_NORMALIZED_NAME)
     normalized_df.to_csv(norm_path, index=False)
 
-    png_path, svg_path = _plot_morris_mu_focused(normalized_df, outdir)
+    png_path, svg_path = _plot_morris_mu_focused(normalized_df, outdir, near_invariant=near_invariant)
 
     artifacts = dict(manifest.get("artifacts") or {})
     artifacts["mu_morris_summary.png"] = os.path.basename(png_path)
     artifacts["mu_morris_summary.svg"] = os.path.basename(svg_path)
     artifacts["mu_morris_normalized.csv"] = os.path.basename(norm_path)
+    samples_path = os.path.join(outdir, MORRIS_OUTPUT_SAMPLES_NAME)
+    if os.path.isfile(samples_path):
+        artifacts[MORRIS_OUTPUT_SAMPLES_NAME] = MORRIS_OUTPUT_SAMPLES_NAME
     manifest["artifacts"] = artifacts
+    manifest["output_definitions"] = dict(MORRIS_OUTPUT_DEFINITIONS)
+    manifest["near_invariant_outputs"] = {k: bool(v) for k, v in near_invariant.items()}
     write_json_manifest(outdir, MORRIS_MANIFEST_NAME, manifest)
 
     print(f"Loaded raw Morris indices: {indices_path}")
     print(f"Saved {norm_path}")
     print(f"Saved {png_path}")
     print(f"Saved {svg_path}")
-    _print_morris_manuscript_summary(normalized_df, meta)
+    _print_morris_manuscript_summary(normalized_df, meta, near_invariant)
     return {
         "indices_path": indices_path,
         "normalized_path": norm_path,
         "png_path": png_path,
         "svg_path": svg_path,
         "meta": meta,
+        "near_invariant": near_invariant,
     }
 
 
@@ -1569,6 +1764,7 @@ def run_mu_sensitivity(profile: ModelProfile, outdir: str, *, plot_only: bool = 
         raise ImportError("SALib is required for --mode mu_sensitivity: pip install SALib") from exc
 
     names, bounds = morris_factor_bounds(profile)
+    assert len(names) == MORRIS_N_FACTORS, f"Expected {MORRIS_N_FACTORS} factors, got {len(names)}"
     problem = {"num_vars": len(names), "names": names, "bounds": bounds}
 
     # Warm up Numba / integrator once before the Morris design loop.
@@ -1580,11 +1776,39 @@ def run_mu_sensitivity(profile: ModelProfile, outdir: str, *, plot_only: bool = 
         num_levels=MORRIS_NUM_LEVELS,
         seed=MORRIS_SEED,
     )
-    Y = np.zeros((X.shape[0], len(MORRIS_OUTPUT_NAMES)), dtype=float)
-    for i in range(X.shape[0]):
-        Y[i] = evaluate_morris_sample(profile, X[i])
-        if (i + 1) % 256 == 0 or (i + 1) == X.shape[0]:
-            print(f"Morris evaluations: {i + 1:,}/{X.shape[0]:,}")
+    X = np.asarray(X, dtype=float)
+    n_eval = int(X.shape[0])
+    assert n_eval == MORRIS_N_EVALUATIONS, (
+        f"Expected {MORRIS_N_EVALUATIONS} Morris evaluations "
+        f"({MORRIS_N_TRAJECTORIES}*({MORRIS_N_FACTORS}+1)), got {n_eval}"
+    )
+
+    Y = np.zeros((n_eval, len(MORRIS_OUTPUT_NAMES)), dtype=float)
+    for i in range(n_eval):
+        Y[i] = evaluate_morris_sample(profile, X[i], check_definitions=(i == 0))
+        if (i + 1) % 256 == 0 or (i + 1) == n_eval:
+            print(f"Morris evaluations: {i + 1:,}/{n_eval:,}")
+
+    assert np.all(np.isfinite(Y)), "Morris output samples must be finite"
+
+    samples_path = os.path.join(outdir, MORRIS_OUTPUT_SAMPLES_NAME)
+    samples_df = pd.DataFrame(Y, columns=list(MORRIS_OUTPUT_NAMES))
+    samples_df.to_csv(samples_path, index=False)
+    print(f"Saved {samples_path}")
+
+    observed_ranges: Dict[str, Dict[str, float]] = {}
+    near_invariant: Dict[str, bool] = {}
+    for j, name in enumerate(MORRIS_OUTPUT_NAMES):
+        y = Y[:, j]
+        observed_ranges[name] = {
+            "min": float(np.min(y)),
+            "max": float(np.max(y)),
+            "span": float(np.max(y) - np.min(y)),
+            "median": float(np.median(y)),
+        }
+        near_invariant[name] = _is_near_invariant(y)
+        if near_invariant[name]:
+            print(f"near-invariant output: {name} (span={observed_ranges[name]['span']:.3e})")
 
     all_factor_rows = []
     index_rows = []
@@ -1605,6 +1829,7 @@ def run_mu_sensitivity(profile: ModelProfile, outdir: str, *, plot_only: bool = 
                 "mu_star": float(Si["mu_star"][k]),
                 "sigma": float(Si["sigma"][k]),
                 "mu_star_conf": float(Si["mu_star_conf"][k]),
+                "near_invariant_output": bool(near_invariant[output_name]),
             }
             all_factor_rows.append(row)
             index_rows.append(
@@ -1623,6 +1848,12 @@ def run_mu_sensitivity(profile: ModelProfile, outdir: str, *, plot_only: bool = 
     all_factors_df.to_csv(all_path, index=False)
     indices_df.to_csv(indices_path, index=False)
 
+    normalized_df = build_morris_normalized_table(indices_df, near_invariant)
+    norm_path = os.path.join(outdir, MORRIS_NORMALIZED_NAME)
+    normalized_df.to_csv(norm_path, index=False)
+
+    png_path, svg_path = _plot_morris_mu_focused(normalized_df, outdir, near_invariant=near_invariant)
+
     manifest = {
         "mode": "mu_sensitivity",
         "method": "Morris elementary effects (SALib)",
@@ -1632,16 +1863,32 @@ def run_mu_sensitivity(profile: ModelProfile, outdir: str, *, plot_only: bool = 
         "n_trajectories": MORRIS_N_TRAJECTORIES,
         "levels": MORRIS_NUM_LEVELS,
         "num_levels": MORRIS_NUM_LEVELS,
+        "n_levels": MORRIS_NUM_LEVELS,
         "seed": MORRIS_SEED,
         "git_commit": _git_commit_hash(),
         "ode_profile": profile.name,
-        "n_factors": len(names),
-        "n_samples": int(X.shape[0]),
-        "n_evaluations": int(X.shape[0]),
+        "n_factors": MORRIS_N_FACTORS,
+        "n_samples": n_eval,
+        "n_evaluations": n_eval,
         "outputs": list(MORRIS_OUTPUT_NAMES),
+        "output_names": list(MORRIS_OUTPUT_NAMES),
+        "output_definitions": dict(MORRIS_OUTPUT_DEFINITIONS),
+        "observed_output_ranges": observed_ranges,
+        "near_invariant_outputs": {k: bool(v) for k, v in near_invariant.items()},
+        "near_invariant_abs_tol": MORRIS_ABS_TOL,
+        "near_invariant_rel_tol": MORRIS_REL_TOL,
+        "relative_normalization": (
+            "For non-invariant outputs: relative_mu_star = mu_star / max_among_all_31_factors(mu_star); "
+            "relative_sigma similarly; ranks among all 31 factors. "
+            "Near-invariant outputs excluded from relative normalization and ranking."
+        ),
         "artifacts": {
             "mu_morris_all_factors.csv": os.path.basename(all_path),
             "mu_morris_indices.csv": os.path.basename(indices_path),
+            "mu_morris_normalized.csv": os.path.basename(norm_path),
+            "mu_morris_output_samples.csv": os.path.basename(samples_path),
+            "mu_morris_summary.png": os.path.basename(png_path),
+            "mu_morris_summary.svg": os.path.basename(svg_path),
         },
         **profile_provenance(profile),
     }
@@ -1649,12 +1896,24 @@ def run_mu_sensitivity(profile: ModelProfile, outdir: str, *, plot_only: bool = 
 
     print(f"Saved {all_path}")
     print(f"Saved {indices_path}")
+    print(f"Saved {norm_path}")
     print(f"Saved {os.path.join(outdir, MORRIS_MANIFEST_NAME)}")
+    print(f"Saved {png_path}")
+    print(f"Saved {svg_path}")
     print("mu1-mu5 Morris indices (mu_star, sigma) by output:")
     _print_mu_factor_table(indices_df)
-
-    # Figure + normalized CSV are produced from the saved raw table (no invented values).
-    export_mu_morris_summary_from_saved(outdir)
+    _print_morris_manuscript_summary(
+        normalized_df,
+        {
+            "n_factors": MORRIS_N_FACTORS,
+            "n_outputs": len(MORRIS_OUTPUT_NAMES),
+            "n_trajectories": MORRIS_N_TRAJECTORIES,
+            "n_evaluations": n_eval,
+            "seed": MORRIS_SEED,
+            "seed_fixed": True,
+        },
+        near_invariant,
+    )
 
 
 def main() -> None:

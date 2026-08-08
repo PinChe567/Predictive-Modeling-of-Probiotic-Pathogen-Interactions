@@ -1001,18 +1001,19 @@ def plot_direct_threshold_comparison(summary_df: pd.DataFrame, outpath: str) -> 
     from matplotlib.ticker import MaxNLocator
 
     apply_matplotlib_style()
+    # (column, title, y-axis label, integer_y, scale)
     metrics = [
         (
             "mean_LR_tracking_error",
             "LR tracking error",
-            "lower is better",
+            r"mean $|\Delta\mathrm{LR}|$",
             False,
             None,
         ),
         (
             "mean_PAUC",
             "P_AUC",
-            "higher is better",
+            r"$P_{\mathrm{AUC}}$",
             False,
             None,
         ),
@@ -1026,7 +1027,7 @@ def plot_direct_threshold_comparison(summary_df: pd.DataFrame, outpath: str) -> 
         (
             "mean_dose_count",
             "Dose count",
-            "integer scale",
+            "doses",
             True,
             None,
         ),
@@ -1040,7 +1041,7 @@ def plot_direct_threshold_comparison(summary_df: pd.DataFrame, outpath: str) -> 
         (
             "constraint_satisfaction_rate",
             "Joint constraint satisfaction",
-            "fraction satisfied",
+            "% satisfied",
             False,
             "percent",
         ),
@@ -1065,7 +1066,7 @@ def plot_direct_threshold_comparison(summary_df: pd.DataFrame, outpath: str) -> 
 
     fig, axes = plt.subplots(2, 3, figsize=(7.2, 5.5), constrained_layout=True)
     x = np.arange(len(models))
-    for ax, (col, title, direction, integer_y, scale) in zip(axes.ravel(), metrics):
+    for ax, (col, title, ylabel, integer_y, scale) in zip(axes.ravel(), metrics):
         vals = []
         yerr = None
         if has_boot:
@@ -1094,14 +1095,13 @@ def plot_direct_threshold_comparison(summary_df: pd.DataFrame, outpath: str) -> 
             ax.bar(x, vals, color=colors, edgecolor="white", width=0.72, yerr=yerr, capsize=3, error_kw={"linewidth": 0.8})
         else:
             ax.bar(x, vals, color=colors, edgecolor="white", width=0.72)
-        ax.set_title(f"{title}\n({direction})", fontsize=9)
+        ax.set_title(title, fontsize=9)
+        ax.set_ylabel(ylabel, fontsize=8)
         ax.set_xticks(x)
         ax.set_xticklabels(labels, rotation=0, ha="center", fontsize=8)
         ax.set_ylim(bottom=0.0)
         if integer_y:
             ax.yaxis.set_major_locator(MaxNLocator(integer=True))
-        if scale == "percent":
-            ax.set_ylabel("%", fontsize=8)
         ax.grid(axis="y", linestyle="--", alpha=0.35)
         ax.tick_params(axis="y", labelsize=8)
 

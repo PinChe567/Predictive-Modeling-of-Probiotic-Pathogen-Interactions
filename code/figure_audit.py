@@ -269,10 +269,46 @@ FIG3_ARCHITECTURE_TEXT = (
 )
 FIG3_PANEL_ORDER: List[Tuple[str, Optional[str], str]] = [
     ("A", None, "Model architecture schematic"),
-    ("B", "model_compare_r2.png", "Mean target-wise R² (original scale)"),
+    ("B", "model_compare_r2.png", "threshold benchmark panel"),
     ("C", "prediction_error_heatmap.png", "Per-target RMSE heatmap"),
     ("D", "ode_back_outcome_heatmap.png", "ODE-back functional outcome R² heatmap"),
 ]
+
+# Per-file manuscript roles and source groups (figures live under different result roots).
+MANUSCRIPT_SOURCE_MAPPING: Dict[str, Dict[str, str]] = {
+    "model_compare_r2.png": {
+        "description": "threshold benchmark panel",
+        "source_group": "tree_srl_benchmark",
+    },
+    "target_weight_heatmap.png": {
+        "description": "signed target-wise stacking coefficients",
+        "source_group": "tree_srl_benchmark",
+    },
+    "uncertainty_decomposition_by_target.png": {
+        "description": "auxiliary uncertainty fraction",
+        "source_group": "tree_srl_benchmark",
+    },
+    "ode_back_r2_barplot.png": {
+        "description": "repeated ODE-back functional R2",
+        "source_group": "ode_back_validation",
+    },
+    "fixed_umax_representative.png": {
+        "description": "deterministic representative trajectories",
+        "source_group": "fixed_umax_validation",
+    },
+    "umax_constraint_feasibility.png": {
+        "description": "constraint feasibility",
+        "source_group": "umax_optimization",
+    },
+    "umax_score_landscape.png": {
+        "description": "composite-penalty response landscape",
+        "source_group": "umax_optimization",
+    },
+    "umax_summary_ablation_composite_supplementary.png": {
+        "description": "composite-penalty policy ablation",
+        "source_group": "umax_optimization",
+    },
+}
 FIG3_PRIMARY_FIGURES: Tuple[str, ...] = (
     "model_compare_r2.png",
     "prediction_error_heatmap.png",
@@ -300,7 +336,7 @@ FIG4_FIXED_UMAX_MODELS = [TAR_MODEL, BEST_SINGLE_TREE, UNIFORM_TREE_MEAN]
 FIG4_SIGNIFICANCE_CONTROLS = [BEST_SINGLE_TREE, UNIFORM_TREE_MEAN]
 
 FIG4_PANEL_ORDER: List[Tuple[str, str, str]] = [
-    ("A", "fixed_umax_representative.png", "Representative trajectories at shared fixed Umax (illustrative only)"),
+    ("A", "fixed_umax_representative.png", "deterministic representative trajectories"),
     ("B", "fixed_umax_summary.png", "Fixed-Umax forward ODE summary (single point estimate per model)"),
     ("C", "fixed_umax_constraint_success.png", "Constraint success rates (optional if redundant)"),
 ]
@@ -313,13 +349,14 @@ FIG4_OPTIONAL_FIGURES: Tuple[str, ...] = (
 )
 
 FIG4_SIGNIFICANCE_RULE_TEXT = (
-    "TAR leftmost; compare TAR vs BestTree and TAR vs UniformTreeMean only; stars only when TAR significantly better; "
-    "control_better recorded in CSV without stars; no stars when n_repeats < 10"
+    "TAR leftmost; compare TAR vs BestTree and TAR vs UniformTreeMean only; "
+    "bidirectional stars (↑ = TAR better, ↓ = control better) when formal significance supports either direction; "
+    "exact p-values and paired differences retained in CSV; no stars when n_repeats < 10"
 )
 
 FIG5_PANEL_ORDER: List[Tuple[str, str, str]] = [
-    ("A", "umax_score_landscape.png", "Umax-response landscape"),
-    ("B", "umax_constraint_feasibility.png", "Constraint feasibility across Umax"),
+    ("A", "umax_score_landscape.png", "composite-penalty response landscape"),
+    ("B", "umax_constraint_feasibility.png", "constraint feasibility"),
     ("C", "umax_ode_ablation.png", "Representative ODE ablation trajectories"),
     ("D", "umax_summary_ablation.png", "TAR-only Umax policy ablation summary"),
 ]
@@ -334,8 +371,8 @@ FIG5_MAIN_SUMMARY_METRICS: Tuple[Tuple[str, str], ...] = (
 
 FIG5_ABLATION_SHORT_LABELS: Dict[str, str] = {
     "TAR_optimized": "Optimized",
-    "TAR_fixed_training_median": "Training median",
-    "TAR_fixed_training_tuned_global": "Training-tuned global",
+    "TAR_fixed_training_median": "Median fixed",
+    "TAR_fixed_training_tuned_global": "Tuned global",
 }
 
 FIG5_ABLATION_BAR_COLORS: Dict[str, str] = {
@@ -361,8 +398,9 @@ UMAX_OPTIMIZATION_MANIFEST_JSON = "umax_optimization_manifest.json"
 FIG5_PLOT_MANIFEST_JSON = "fig5_plot_manifest.json"
 
 SIGNIFICANCE_RULE_TEXT = (
-    "TAR leftmost; compare TAR vs each control only; stars only when TAR significantly better; "
-    "control_better recorded in CSV without stars; no stars when n_repeats < 10"
+    "TAR leftmost; compare TAR vs each control only; "
+    "bidirectional stars (↑ = TAR better, ↓ = control better) when formal significance supports either direction; "
+    "exact p-values and paired differences retained in CSV; no stars when n_repeats < 10"
 )
 
 MODEL_BAR_COLORS: Dict[str, str] = {
@@ -595,60 +633,143 @@ def significance_pairs_for_plot(
     significance_for_manuscript: bool = False,
     bidirectional: bool = False,
 ) -> List[Tuple[str, str, str]]:
+    """Build (srl, control, star_label) triples for formal TAR-vs-control brackets.
+
+    When ``bidirectional`` is True, statistically supported control-better comparisons are
+    annotated with ↓ and TAR-better with ↑ so direction is unambiguous. CSV p-values and
+    paired differences are never modified here.
+    """
     pairs: List[Tuple[str, str, str]] = []
     if pairwise_df.empty or not significance_for_manuscript:
         return pairs
+    control_better_tiers = {
+        "control_better",
+        "formal_control_better",
+        "exploratory_control_better",
+    }
     sub = pairwise_df[(pairwise_df["metric"] == metric) & (pairwise_df["srl_model"] == srl_model)]
     for control_model in control_models:
         row = sub[sub["control_model"] == control_model]
         if row.empty:
             continue
         row0 = row.iloc[0]
-        label = str(row0["significance_label"])
-        if label in {"ns", "na", "nan", ""} and bidirectional:
-            tier = str(row0.get("significance_tier", ""))
-            if tier in {"control_better", "formal_control_better", "exploratory_control_better"}:
-                from tree_srl_benchmark import significance_label
-
-                p_candidates = [
-                    float(p)
-                    for p in (row0.get("permutation_p"), row0.get("wilcoxon_p"))
-                    if pd.notna(p) and np.isfinite(float(p))
-                ]
-                if p_candidates:
-                    label = significance_label(min(p_candidates))
-                ci_high = float(row0.get("CI_high", np.nan))
-                if label == "ns" and np.isfinite(ci_high) and ci_high < 0.0:
-                    label = "*"
-        if label in {"ns", "na", "nan", ""}:
-            continue
         if bool(row0.get("exploratory", False)):
             continue
+        label = str(row0["significance_label"])
+        tier = str(row0.get("significance_tier", ""))
+        comparison = str(row0.get("comparison_result", ""))
+        is_control_better = tier in control_better_tiers or comparison in {
+            "control_better",
+            "exploratory_control_better",
+        }
+        if label in {"ns", "na", "nan", ""}:
+            if not (bidirectional and is_control_better):
+                continue
+            from tree_srl_benchmark import significance_label
+
+            p_candidates = [
+                float(p)
+                for p in (row0.get("permutation_p"), row0.get("wilcoxon_p"))
+                if pd.notna(p) and np.isfinite(float(p))
+            ]
+            if p_candidates:
+                label = significance_label(min(p_candidates))
+            ci_high = float(row0.get("CI_high", np.nan))
+            if label == "ns" and np.isfinite(ci_high) and ci_high < 0.0:
+                label = "*"
+        if label in {"ns", "na", "nan", ""}:
+            continue
+        if not bidirectional and is_control_better:
+            continue
+        if bidirectional:
+            # Unambiguous direction markers; omit all stars rather than show ambiguous ****.
+            label = f"{label}↓" if is_control_better else f"{label}↑"
         pairs.append((srl_model, control_model, label))
     return pairs
+
+
+def expert_display_label(expert_id: str) -> str:
+    """Short display-only expert label; CSV / manifest retain the original expert ID."""
+    s = str(expert_id)
+    if s.startswith("ExtraTree_"):
+        s = "ET_" + s[len("ExtraTree_") :]
+    elif s.startswith("CART_"):
+        s = s[5:]
+    return (
+        s.replace("friedman", "fr")
+        .replace("poisson", "pois")
+        .replace("shallow", "sh")
+        .replace("single", "1")
+        .replace("features", "f")
+        .replace("depth", "d")
+        .replace("leaf", "L")
+        .replace("deep", "dp")
+        .replace("log2_", "log2")
+        .replace("sqrt_", "sqrt")
+    )
 
 
 def plot_target_weight_heatmap(weights_df: pd.DataFrame, outpath: str, stacker_type: str = "ridge") -> None:
     apply_matplotlib_style()
     if weights_df.empty:
         return
+
+    if "stacker_type" in weights_df.columns:
+        stacker_types = sorted(
+            {str(t).strip().lower() for t in weights_df["stacker_type"].dropna().unique() if str(t).strip()}
+        )
+    else:
+        stacker_types = [str(stacker_type).strip().lower()] if str(stacker_type).strip() else ["ridge"]
+
+    if len(stacker_types) > 1:
+        raise ValueError(
+            "plot_target_weight_heatmap: mixed stacker_type values "
+            f"{stacker_types}; refuse to average incomparable coefficient scales. "
+            "Filter to one stacker_type or produce separate facets."
+        )
+    resolved = stacker_types[0] if stacker_types else str(stacker_type).strip().lower() or "ridge"
+    ridge_like = resolved == "ridge" or resolved.startswith("ridge")
+    convex_like = resolved in {
+        "convex",
+        "nonneg",
+        "non-negative",
+        "non_negative",
+        "nnls",
+        "positive",
+    } or "convex" in resolved or "nonneg" in resolved
+
     pivot = (
         weights_df.groupby(["target", "expert"], as_index=False)["weight"]
         .mean()
         .pivot(index="target", columns="expert", values="weight")
     )
-    plt.figure(figsize=(max(8, 0.45 * pivot.shape[1]), 4.5))
-    im = plt.imshow(pivot.values, aspect="auto", **sequential_heatmap_kwargs(pivot.values))
-    cbar_label = "Ridge coefficient" if stacker_type == "ridge" else "Convex weight"
-    plt.colorbar(im, fraction=0.046, pad=0.04, label=cbar_label)
-    plt.xticks(range(pivot.shape[1]), pivot.columns, rotation=90, fontsize=10)
-    plt.yticks(range(pivot.shape[0]), pivot.index, fontsize=11)
-    plt.xlabel("Expert")
-    plt.ylabel("Target")
-    plt.title("Target-wise stacking coefficients")
-    plt.tight_layout()
-    save_figure(plt.gcf(), outpath)
-    plt.close()
+    display_experts = [expert_display_label(c) for c in pivot.columns]
+    n_experts = max(pivot.shape[1], 1)
+    fig_w = max(12.0, 0.70 * n_experts)
+    fig, ax = plt.subplots(figsize=(fig_w, 4.8))
+    if ridge_like:
+        im = ax.imshow(pivot.values, aspect="auto", **diverging_heatmap_kwargs(pivot.values))
+        cbar_label = "Ridge coefficient"
+    elif convex_like:
+        im = ax.imshow(pivot.values, aspect="auto", **sequential_heatmap_kwargs(pivot.values))
+        cbar_label = "Convex weight"
+    else:
+        raise ValueError(
+            f"plot_target_weight_heatmap: unrecognized stacker_type {resolved!r}; "
+            "expected ridge or convex/non-negative."
+        )
+    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label=cbar_label)
+    ax.set_xticks(range(pivot.shape[1]))
+    ax.set_xticklabels(display_experts, rotation=60, ha="right", fontsize=9)
+    ax.tick_params(axis="x", pad=2)
+    ax.set_yticks(range(pivot.shape[0]))
+    ax.set_yticklabels(pivot.index, fontsize=10)
+    ax.set_xlabel("Expert")
+    ax.set_ylabel("Target")
+    ax.set_title("Target-wise stacking coefficients")
+    finalize_figure_layout(fig, rect=(0.0, 0.18, 1.0, 1.0))
+    save_figure(fig, outpath)
+    plt.close(fig)
 
 
 def plot_per_target_metric_heatmap(
@@ -1204,66 +1325,47 @@ def _subsample_for_scatter(df: pd.DataFrame, n: int = 1200, seed: int = 42) -> p
     return df.sample(n, random_state=seed)
 
 
-def _render_uncertainty_column(
-    axes: np.ndarray,
-    col_idx: int,
-    title: str,
-    ale_full: pd.DataFrame,
-    epi_full: pd.DataFrame,
-    ale_sub: pd.DataFrame,
-    epi_sub: pd.DataFrame,
+def _render_uncertainty_scatter(
+    ax,
+    *,
+    kind: str,
+    full_df: pd.DataFrame,
+    sub_df: pd.DataFrame,
+    show_ylabel: bool,
+    show_xlabel: bool,
+    title: Optional[str] = None,
 ) -> None:
-    ax_ale = axes[0, col_idx]
-    if not ale_sub.empty:
-        ale_x = ale_full["aleatoric_std"].to_numpy(dtype=float)
-        ale_y = ale_full["abs_error"].to_numpy(dtype=float)
+    """Render one aleatoric or epistemic uncertainty scatter (data/stats unchanged)."""
+    x_col = "aleatoric_std" if kind == "aleatoric" else "epistemic_std"
+    color = PALETTE_BLUE_MID if kind == "aleatoric" else PALETTE_RED_MID
+    xlabel = "Aleatoric std" if kind == "aleatoric" else "Epistemic std"
+    if not sub_df.empty and x_col in full_df.columns and "abs_error" in full_df.columns:
+        stats_x = full_df[x_col].to_numpy(dtype=float)
+        stats_y = full_df["abs_error"].to_numpy(dtype=float)
         _scatter_uncertainty_trend(
-            ax_ale,
-            ale_sub["aleatoric_std"].to_numpy(dtype=float),
-            ale_sub["abs_error"].to_numpy(dtype=float),
-            PALETTE_BLUE_MID,
-            spearman_rho=_spearman_rho(ale_x, ale_y),
+            ax,
+            sub_df[x_col].to_numpy(dtype=float),
+            sub_df["abs_error"].to_numpy(dtype=float),
+            color,
+            spearman_rho=_spearman_rho(stats_x, stats_y),
             show_pearson_r2=False,
-            stats_x=ale_x,
-            stats_y=ale_y,
-            trend_x=ale_x,
-            trend_y=ale_y,
+            stats_x=stats_x,
+            stats_y=stats_y,
+            trend_x=stats_x,
+            trend_y=stats_y,
         )
-    ax_ale.set_xlabel("Aleatoric std")
-    if col_idx == 0:
-        ax_ale.set_ylabel("|error|")
-    if col_idx == 0:
-        ax_ale.legend(
-            handles=[
-                plt.Line2D([0], [0], marker="o", linestyle="", color=PALETTE_BLUE_MID, label="Aleatoric"),
-                plt.Line2D([0], [0], marker="o", linestyle="", color=PALETTE_RED_MID, label="Epistemic"),
-            ],
-            frameon=False,
-            fontsize=10,
-            loc="upper left",
-        )
-    ax_ale.grid(axis="both", linestyle="--", alpha=0.25)
-
-    ax_epi = axes[1, col_idx]
-    if not epi_sub.empty:
-        epi_x = epi_full["epistemic_std"].to_numpy(dtype=float)
-        epi_y = epi_full["abs_error"].to_numpy(dtype=float)
-        _scatter_uncertainty_trend(
-            ax_epi,
-            epi_sub["epistemic_std"].to_numpy(dtype=float),
-            epi_sub["abs_error"].to_numpy(dtype=float),
-            PALETTE_RED_MID,
-            spearman_rho=_spearman_rho(epi_x, epi_y),
-            show_pearson_r2=False,
-            stats_x=epi_x,
-            stats_y=epi_y,
-            trend_x=epi_x,
-            trend_y=epi_y,
-        )
-    ax_epi.set_xlabel("Epistemic std")
-    if col_idx == 0:
-        ax_epi.set_ylabel("|error|")
-    ax_epi.grid(axis="both", linestyle="--", alpha=0.25)
+    if show_xlabel:
+        ax.set_xlabel(xlabel, fontsize=10)
+    else:
+        ax.set_xlabel("")
+    if show_ylabel:
+        ax.set_ylabel("|error|", fontsize=10)
+    if title:
+        ax.set_title(title, fontsize=10, pad=4)
+    ax.tick_params(axis="both", labelsize=9)
+    ax.grid(axis="both", linestyle="--", alpha=0.25)
+    for text in ax.texts:
+        text.set_fontsize(9)
 
 
 def plot_uncertainty_decomposition(
@@ -1273,7 +1375,12 @@ def plot_uncertainty_decomposition(
     *,
     method: str = "mc_dropout",
 ) -> None:
-    """Epistemic vs aleatoric uncertainty decomposition (exploratory diagnostic)."""
+    """Epistemic vs aleatoric uncertainty decomposition (exploratory diagnostic).
+
+    Layout is 4×3:
+      row 1 aleatoric Tthr_1–3; row 2 epistemic Tthr_1–3;
+      row 3 aleatoric Tthr_4–5 + pooled; row 4 epistemic Tthr_4–5 + pooled.
+    """
     apply_matplotlib_style()
     if case_df.empty:
         return
@@ -1290,18 +1397,18 @@ def plot_uncertainty_decomposition(
     if not targets:
         return
 
-    n_targets = len(targets)
-    n_cols = n_targets + 1 if n_targets > 1 else n_targets
-    fig, axes = plt.subplots(2, n_cols, figsize=(max(12, 2.4 * n_cols), 6.2), sharex="col")
-    if n_cols == 1:
-        axes = np.array(axes).reshape(2, 1)
+    # Keep the same statistical aggregation side-plot as before.
+    if not per_target.empty and len(targets) > 1:
+        stem, ext = os.path.splitext(outpath)
+        per_target_path = f"{stem}_by_target{ext}"
+        _plot_uncertainty_by_target_bars(per_target, targets, per_target_path, n_repeats=n_repeats)
 
     scatter_n = 1200
     scatter_seed = 42
+    target_payloads: Dict[str, Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]] = {}
     ale_subs: List[pd.DataFrame] = []
     epi_subs: List[pd.DataFrame] = []
-
-    for col_idx, target in enumerate(targets):
+    for target in targets:
         sub = tthr_case[tthr_case["target"] == target]
         plot_full = sub[["aleatoric_std", "epistemic_std", "abs_error"]].dropna()
         plot_sub = _subsample_for_scatter(plot_full, n=scatter_n, seed=scatter_seed)
@@ -1309,36 +1416,67 @@ def plot_uncertainty_decomposition(
         epi_full = plot_full[["epistemic_std", "abs_error"]]
         ale_sub = plot_sub[["aleatoric_std", "abs_error"]]
         epi_sub = plot_sub[["epistemic_std", "abs_error"]]
+        target_payloads[target] = (ale_full, epi_full, ale_sub, epi_sub)
         ale_subs.append(ale_sub)
         epi_subs.append(epi_sub)
-        _render_uncertainty_column(axes, col_idx, target, ale_full, epi_full, ale_sub, epi_sub)
-        axes[0, col_idx].set_title(target, fontsize=11)
-        axes[1, col_idx].set_title(target, fontsize=11)
 
-    if n_targets > 1:
+    pooled_label = "pooled"
+    if len(targets) > 1:
         ale_all_full = tthr_case[["aleatoric_std", "abs_error"]].dropna()
         epi_all_full = tthr_case[["epistemic_std", "abs_error"]].dropna()
-        ale_all_sub = pd.concat(ale_subs, ignore_index=True)
-        epi_all_sub = pd.concat(epi_subs, ignore_index=True)
-        _render_uncertainty_column(
-            axes,
-            n_targets,
-            "All Tthr",
-            ale_all_full,
-            epi_all_full,
-            ale_all_sub,
-            epi_all_sub,
-        )
-        axes[0, n_targets].set_title("All Tthr", fontsize=11)
-        axes[1, n_targets].set_title("All Tthr", fontsize=11)
+        ale_all_sub = pd.concat(ale_subs, ignore_index=True) if ale_subs else ale_all_full
+        epi_all_sub = pd.concat(epi_subs, ignore_index=True) if epi_subs else epi_all_full
+        target_payloads[pooled_label] = (ale_all_full, epi_all_full, ale_all_sub, epi_all_sub)
 
-    if not per_target.empty and n_targets > 1:
-        stem, ext = os.path.splitext(outpath)
-        per_target_path = f"{stem}_by_target{ext}"
-        _plot_uncertainty_by_target_bars(per_target, targets, per_target_path, n_repeats=n_repeats)
+    # Column groups: [Tthr_1..3], [Tthr_4, Tthr_5, pooled]
+    top_targets = list(targets[:3])
+    while len(top_targets) < 3:
+        top_targets.append("")
+    bottom_targets = list(targets[3:5])
+    while len(bottom_targets) < 2:
+        bottom_targets.append("")
+    bottom_targets.append(pooled_label if pooled_label in target_payloads else "")
 
-    fig.suptitle("Uncertainty decomposition", y=0.99, fontsize=FS_TITLE)
-    finalize_figure_layout(fig, rect=(0.0, 0.04, 1.0, 0.95))
+    fig, axes = plt.subplots(4, 3, figsize=(11.2, 10.4), constrained_layout=True)
+    legend_handles = [
+        plt.Line2D([0], [0], marker="o", linestyle="", color=PALETTE_BLUE_MID, label="Aleatoric"),
+        plt.Line2D([0], [0], marker="o", linestyle="", color=PALETTE_RED_MID, label="Epistemic"),
+    ]
+
+    def _draw_row(row_idx: int, kind: str, col_targets: Sequence[str]) -> None:
+        for col_idx, target in enumerate(col_targets):
+            ax = axes[row_idx, col_idx]
+            if not target or target not in target_payloads:
+                ax.set_visible(False)
+                continue
+            ale_full, epi_full, ale_sub, epi_sub = target_payloads[target]
+            full_df = ale_full if kind == "aleatoric" else epi_full
+            sub_df = ale_sub if kind == "aleatoric" else epi_sub
+            title = "pooled" if target == pooled_label else target
+            _render_uncertainty_scatter(
+                ax,
+                kind=kind,
+                full_df=full_df,
+                sub_df=sub_df,
+                show_ylabel=(col_idx == 0),
+                show_xlabel=True,
+                title=title if row_idx in {0, 2} else None,
+            )
+
+    _draw_row(0, "aleatoric", top_targets)
+    _draw_row(1, "epistemic", top_targets)
+    _draw_row(2, "aleatoric", bottom_targets)
+    _draw_row(3, "epistemic", bottom_targets)
+
+    fig.legend(
+        handles=legend_handles,
+        loc="upper center",
+        ncol=2,
+        frameon=False,
+        fontsize=10,
+        bbox_to_anchor=(0.5, 1.02),
+    )
+    fig.suptitle("Uncertainty decomposition", fontsize=FS_TITLE, y=1.04)
     save_figure(fig, outpath)
     plt.close(fig)
 
@@ -1801,7 +1939,7 @@ def _plot_metric_panel_with_ci(
             height=horizontal_bar_height,
         )
         ax.set_yticks(y_pos)
-        ax.set_yticklabels(display_labels, fontsize=FS_TICK)
+        ax.set_yticklabels(display_labels, fontsize=10)
         ax.set_xlabel(ylabel)
         ax.grid(axis="x", linestyle="--", alpha=0.35)
         ax.spines["top"].set_visible(False)
@@ -3336,7 +3474,10 @@ def plot_umax_summary_ablation(
     n_panels = sum(1 for col, _ in metric_specs if col in plot_df.columns)
     if horizontal_bars:
         n_bars = len(plot_df)
-        fig, axes = plt.subplots(1, max(n_panels, 1), figsize=(7.2, 1.35 * n_bars + 1.2))
+        # Keep bar thickness readable: short height for few conditions, avoid tall empty space.
+        fig_h = max(2.6, 0.62 * n_bars + 1.15) if n_panels <= 1 else max(3.2, 1.15 * n_bars + 1.0)
+        fig_w = 6.6 if n_panels <= 1 else 3.6 * max(n_panels, 1)
+        fig, axes = plt.subplots(1, max(n_panels, 1), figsize=(fig_w, fig_h))
     else:
         fig, axes = plt.subplots(1, max(n_panels, 1), figsize=(3.4 * max(n_panels, 1), 5.2))
     if n_panels == 1:
@@ -3358,8 +3499,12 @@ def plot_umax_summary_ablation(
             display_labels=[label_fn(m) for m in plot_df["model"].tolist()],
             bar_colors=bar_colors,
             horizontal=horizontal_bars,
-            horizontal_bar_height=0.92,
+            horizontal_bar_height=0.72 if horizontal_bars and n_panels <= 1 else 0.92,
         )
+        if horizontal_bars:
+            ax.tick_params(axis="y", labelsize=10)
+            for tick in ax.get_yticklabels():
+                tick.set_fontsize(10)
         if not horizontal_bars:
             ax.set_xticklabels(
                 [label_fn(m) for m in plot_df["model"]],
@@ -3394,18 +3539,21 @@ def build_fig5_plot_manifest(
             role="primary_manuscript_figure",
             input_sources={
                 "umax_score_landscape.png": [
-                    "umax_response_landscape.csv",
-                    "umax_selected_umax_distribution.csv",
-                    "umax_score_landscape_curves.csv",
+                    "umax_optimization/umax_response_landscape.csv",
+                    "umax_optimization/umax_selected_umax_distribution.csv",
+                    "umax_optimization/umax_score_landscape_curves.csv",
                 ],
                 "umax_constraint_feasibility.png": [
-                    "umax_response_landscape.csv",
-                    "umax_optimization_u_candidates.csv",
+                    "umax_optimization/umax_response_landscape.csv",
+                    "umax_optimization/umax_optimization_u_candidates.csv",
                 ],
-                "umax_ode_ablation.png": ["umax_ablation_representative_trajectories.csv", FIG5_PLOT_MANIFEST_JSON],
+                "umax_ode_ablation.png": [
+                    "umax_optimization/umax_ablation_representative_trajectories.csv",
+                    f"umax_optimization/{FIG5_PLOT_MANIFEST_JSON}",
+                ],
                 "umax_summary_ablation.png": [
-                    "umax_ablation_repeated_plot_stats.csv",
-                    "umax_ablation_significance_annotations.csv",
+                    "umax_optimization/umax_ablation_repeated_plot_stats.csv",
+                    "umax_optimization/umax_ablation_significance_annotations.csv",
                 ],
             }.get(filename, []),
             n_repeats=n_repeats,
@@ -3419,6 +3567,12 @@ def build_fig5_plot_manifest(
         )
         for panel, filename, desc in FIG5_PANEL_ORDER
     ]
+    for entry in panel_mapping:
+        mapped = MANUSCRIPT_SOURCE_MAPPING.get(entry.get("filename", ""), {})
+        if mapped.get("description"):
+            entry["description"] = mapped["description"]
+        if mapped.get("source_group"):
+            entry["source_group"] = mapped["source_group"]
     return {
         "figure": "Fig. 5",
         "figure_title": "Umax optimization analysis",
@@ -3426,6 +3580,11 @@ def build_fig5_plot_manifest(
         "prediction_input_sources": list(prediction_sources or []),
         "primary_outputs": {k: primary_outputs[k] for k in FIG5_PRIMARY_FIGURES if k in primary_outputs},
         "figure_panel_mapping": panel_mapping,
+        "manuscript_source_mapping": {
+            k: dict(v)
+            for k, v in MANUSCRIPT_SOURCE_MAPPING.items()
+            if v.get("source_group") == "umax_optimization"
+        },
         "fig5_primary_figures": list(FIG5_PRIMARY_FIGURES),
         "optimizer_score_rule": (
             "One-sided optimization_penalty_score (>= 0); signed_relative_rms is diagnostic only."
@@ -3695,38 +3854,54 @@ def build_fig3_plot_manifest(
 ) -> dict:
     manuscript_safe = bool(n_repeats >= 100 and split_mode == "group" and significance_for_manuscript)
     sig_mode = (
-        "TAR_vs_RF_UniformTreeMean_BestTree_stars_when_TAR_better_n_repeats_ge_10"
+        "TAR_vs_RF_UniformTreeMean_BestTree_bidirectional_stars_n_repeats_ge_10"
         if significance_for_manuscript
         else "exploratory_no_formal_stars"
     )
     panel_mapping = []
     for panel, filename, description in FIG3_PANEL_ORDER:
         if filename:
+            mapped = MANUSCRIPT_SOURCE_MAPPING.get(filename, {})
+            panel_description = mapped.get("description", description)
+            source_group = mapped.get("source_group")
+            input_sources = {
+                "model_compare_r2.png": [
+                    "tree_srl_benchmark/model_compare_summary.csv",
+                    "tree_srl_benchmark/parameter_pairwise_significance.csv",
+                ],
+                "prediction_error_heatmap.png": [
+                    "tree_srl_benchmark/model_compare_summary.csv",
+                    "tree_srl_benchmark/model_compare_per_target.csv",
+                    "tree_srl_benchmark/parameter_pairwise_significance.csv",
+                ],
+                "ode_back_outcome_heatmap.png": [
+                    f"ode_back_validation/{ODE_BACK_PER_OUTCOME_CSV}",
+                    f"ode_back_validation/{ODE_BACK_SUMMARY_CSV}",
+                    f"ode_back_validation/{ODE_BACK_MANIFEST_JSON}",
+                ],
+                "uncertainty_decomposition.png": [
+                    "tree_srl_benchmark/uncertainty_decomposition.csv",
+                    "tree_srl_benchmark/uncertainty_summary.csv",
+                ],
+            }.get(filename, [])
             panel_mapping.append(
                 _fig_panel_record(
-                    panel, filename, description,
+                    panel, filename, panel_description,
                     role="primary_manuscript_figure",
-                    input_sources={
-                        "model_compare_r2.png": ["model_compare_summary.csv", "parameter_pairwise_significance.csv"],
-                        "prediction_error_heatmap.png": ["model_compare_summary.csv", "model_compare_per_target.csv", "parameter_pairwise_significance.csv"],
-                        "ode_back_outcome_heatmap.png": [
-                            ODE_BACK_PER_OUTCOME_CSV,
-                            ODE_BACK_SUMMARY_CSV,
-                            ODE_BACK_MANIFEST_JSON,
-                        ],
-                        "uncertainty_decomposition.png": ["uncertainty_decomposition.csv", "uncertainty_summary.csv"],
-                    }.get(filename, []),
+                    input_sources=input_sources,
                     n_repeats=n_repeats,
                     umax_setting="not_applicable",
                     significance_mode=sig_mode if filename in {"model_compare_r2.png", "prediction_error_heatmap.png"} else "none",
                 )
             )
+            if source_group:
+                panel_mapping[-1]["source_group"] = source_group
         else:
             panel_mapping.append(
                 _fig_panel_record(
                     panel, None, description,
                     role="manual_schematic",
-                    input_sources=["model_compare_manifest.json"],
+                    input_sources=["tree_srl_benchmark/model_compare_manifest.json"],
                     n_repeats=n_repeats,
                     umax_setting="not_applicable",
                     significance_mode="none",
@@ -3740,17 +3915,33 @@ def build_fig3_plot_manifest(
         "primary_outputs": {k: v for k, v in primary_outputs.items() if k in FIG3_PRIMARY_FIGURES},
         "supplementary_outputs": supplementary_outputs,
         "figure_panel_mapping": panel_mapping,
+        "manuscript_source_mapping": {
+            k: dict(v)
+            for k, v in MANUSCRIPT_SOURCE_MAPPING.items()
+            if v.get("source_group") in {"tree_srl_benchmark", "ode_back_validation"}
+            or k in supplementary_outputs
+            or k in primary_outputs
+        },
         "model_order": list(model_order),
         "display_labels": {m: model_display_label(m) for m in model_order},
         "prediction_input_source": "tree_srl_benchmark/repeats/repeat_XXX/predictions.csv",
         "statistics_used": {
-            "model_compare_r2.png": "mean target-wise R² original scale, mean ± 95% CI when n_repeats > 1",
+            "model_compare_r2.png": (
+                "threshold benchmark panel: mean target-wise R² original scale, mean ± 95% CI when n_repeats > 1; "
+                "bidirectional TAR-vs-control stars (↑ TAR better, ↓ control better)"
+            ),
             "prediction_error_heatmap.png": "RMSE original scale per target",
             "ode_back_outcome_heatmap.png": (
                 "ODE-back functional outcome R²: predicted Tthr fed to ODE vs reference ODE outcomes; "
                 "fixed non-optimized Umax per sample"
             ),
-            "uncertainty_decomposition.png": "aleatoric vs epistemic std (pooled and per Tthr); supplementary diagnostic",
+            "ode_back_r2_barplot.png": (
+                "repeated ODE-back functional R2: mean outcome R² ± 95% CI; "
+                "bidirectional TAR-vs-control stars (↑ TAR better, ↓ control better)"
+            ),
+            "target_weight_heatmap.png": "signed target-wise stacking coefficients (ridge/convex-aware colormap)",
+            "uncertainty_decomposition.png": "aleatoric vs epistemic std (4×3 layout; pooled and per Tthr); supplementary diagnostic",
+            "uncertainty_decomposition_by_target.png": "auxiliary uncertainty fraction by target",
         },
         "fig3_panel_semantics": {
             "Fig3B": "Direct Tthr prediction metrics (tree_srl_benchmark).",
@@ -3759,7 +3950,8 @@ def build_fig3_plot_manifest(
         },
         "ode_back_validation_notes": (
             "ODE-back validation uses fixed/non-optimized Umax to isolate the effect of predicted Tthr. "
-            "Fig. 3D heatmap lives under results/ode_back_validation/figure/ (not copied into tree_srl_benchmark/figure/)."
+            "Fig. 3D heatmap and ode_back_r2_barplot live under results/ode_back_validation/figure/ "
+            "(not copied into tree_srl_benchmark/figure/)."
         ),
         "significance_rule": SIGNIFICANCE_RULE_TEXT,
         "n_repeats": int(n_repeats),
@@ -3857,9 +4049,15 @@ def build_fig4_plot_manifest(
             panel, filename, description,
             role="primary_manuscript_figure" if filename in FIG4_PRIMARY_FIGURES else "optional_manuscript_figure",
             input_sources={
-                "fixed_umax_representative.png": [FIXED_UMAX_TRAJECTORIES_CSV, FIG4_PLOT_MANIFEST_JSON],
-                "fixed_umax_summary.png": [FIXED_UMAX_REPEATED_STATS_CSV, FIXED_UMAX_SIGNIFICANCE_CSV],
-                "fixed_umax_constraint_success.png": [FIXED_UMAX_REPEATED_STATS_CSV],
+                "fixed_umax_representative.png": [
+                    f"fixed_umax_validation/{FIXED_UMAX_TRAJECTORIES_CSV}",
+                    f"fixed_umax_validation/{FIG4_PLOT_MANIFEST_JSON}",
+                ],
+                "fixed_umax_summary.png": [
+                    f"fixed_umax_validation/{FIXED_UMAX_REPEATED_STATS_CSV}",
+                    f"fixed_umax_validation/{FIXED_UMAX_SIGNIFICANCE_CSV}",
+                ],
+                "fixed_umax_constraint_success.png": [f"fixed_umax_validation/{FIXED_UMAX_REPEATED_STATS_CSV}"],
             }.get(filename, []),
             n_repeats=n_repeats,
             umax_setting="fixed_paper_figure_profile",
@@ -3867,6 +4065,12 @@ def build_fig4_plot_manifest(
         )
         for panel, filename, description in FIG4_PANEL_ORDER
     ]
+    for entry in panel_mapping:
+        mapped = MANUSCRIPT_SOURCE_MAPPING.get(entry.get("filename", ""), {})
+        if mapped.get("description"):
+            entry["description"] = mapped["description"]
+        if mapped.get("source_group"):
+            entry["source_group"] = mapped["source_group"]
     primary_names = [p["filename"] for p in panel_mapping if p["filename"] in primary_outputs]
     return {
         "figure": "Fig. 4",
@@ -3878,11 +4082,17 @@ def build_fig4_plot_manifest(
         "optional_outputs": optional_outputs,
         "skipped_optional_figures": skipped_optional or {},
         "figure_panel_mapping": panel_mapping,
+        "manuscript_source_mapping": {
+            k: dict(v)
+            for k, v in MANUSCRIPT_SOURCE_MAPPING.items()
+            if v.get("source_group") == "fixed_umax_validation"
+        },
         "fig4_models": list(FIG4_FIXED_UMAX_MODELS),
         "fig4_significance_comparisons": list(FIG4_SIGNIFICANCE_CONTROLS),
         "model_order": list(FIG4_FIXED_UMAX_MODELS),
         "display_labels": {m: model_display_label(m) for m in FIG4_FIXED_UMAX_MODELS},
         "statistics_used": {
+            "fixed_umax_representative.png": "deterministic representative trajectories at shared fixed Umax",
             "fixed_umax_summary.png": (
                 "total dosage, mean P_AUC, mean LR, terminal pathogen; single forward ODE point estimates"
             ),
@@ -3952,6 +4162,7 @@ def generate_ode_back_plots(outdir: str, config: Optional[dict] = None) -> Dict[
         main_controls,
         metric=ODE_BACK_BAR_METRIC,
         significance_for_manuscript=significance_for_manuscript,
+        bidirectional=True,
     )
 
     bar_path = os.path.join(figure_dir, "ode_back_r2_barplot.png")
@@ -3996,6 +4207,23 @@ def generate_ode_back_plots(outdir: str, config: Optional[dict] = None) -> Dict[
         scatter_path = os.path.join(figure_dir, "ode_back_pred_vs_ref_scatter.png")
         plot_ode_back_pred_vs_ref_scatter(case_df, scatter_path, model_order=model_order)
         outputs["ode_back_pred_vs_ref_scatter.png"] = scatter_path
+
+    manifest_path = os.path.join(outdir, ODE_BACK_MANIFEST_JSON)
+    if os.path.isfile(manifest_path):
+        with open(manifest_path, encoding="utf-8") as fh:
+            ob_manifest = json.load(fh)
+        ob_manifest["significance_rule"] = SIGNIFICANCE_RULE_TEXT
+        ob_manifest["statistics_used"] = {
+            **dict(ob_manifest.get("statistics_used") or {}),
+            "ode_back_r2_barplot.png": (
+                "repeated ODE-back functional R2; bidirectional TAR-vs-control stars "
+                "(↑ TAR better, ↓ control better); CSV p-values/diffs unchanged"
+            ),
+        }
+        ob_manifest["manuscript_source_mapping"] = {
+            "ode_back_r2_barplot.png": dict(MANUSCRIPT_SOURCE_MAPPING["ode_back_r2_barplot.png"]),
+        }
+        write_json_manifest(outdir, ODE_BACK_MANIFEST_JSON, ob_manifest)
 
     return outputs
 
@@ -4085,6 +4313,7 @@ def generate_benchmark_plots(outdir: str, config: Optional[dict] = None) -> Dict
         TAR_MODEL,
         main_controls,
         significance_for_manuscript=significance_for_manuscript,
+        bidirectional=True,
     )
     rmse_pairs = significance_pairs_for_plot(
         pairwise_df,
@@ -4092,6 +4321,7 @@ def generate_benchmark_plots(outdir: str, config: Optional[dict] = None) -> Dict
         main_controls,
         metric="mean_RMSE_original",
         significance_for_manuscript=significance_for_manuscript,
+        bidirectional=True,
     )
 
     main_path = os.path.join(figure_dir, "model_compare_r2.png")
@@ -4220,12 +4450,39 @@ def generate_benchmark_plots(outdir: str, config: Optional[dict] = None) -> Dict
         "benchmark_plot_manifest": "benchmark_plot_manifest.json",
         "deprecated_outputs_removed": True,
         "csv_data_sources": {
-            "model_compare_r2.png": ["model_compare_summary.csv", "parameter_pairwise_significance.csv"],
-            "target_weight_heatmap.png": ["target_weight_table.csv"],
-            "prediction_error_heatmap.png": ["model_compare_per_target.csv"],
-            "uncertainty_decomposition.png": ["uncertainty_decomposition.csv", "uncertainty_summary.csv"],
-            "uncertainty_decomposition_by_target.png": ["uncertainty_decomposition.csv", "uncertainty_summary.csv"],
+            "model_compare_r2.png": {
+                "description": MANUSCRIPT_SOURCE_MAPPING["model_compare_r2.png"]["description"],
+                "source_group": "tree_srl_benchmark",
+                "files": ["model_compare_summary.csv", "parameter_pairwise_significance.csv"],
+            },
+            "target_weight_heatmap.png": {
+                "description": MANUSCRIPT_SOURCE_MAPPING["target_weight_heatmap.png"]["description"],
+                "source_group": "tree_srl_benchmark",
+                "files": ["target_weight_table.csv"],
+            },
+            "prediction_error_heatmap.png": {
+                "description": "Per-target RMSE heatmap",
+                "source_group": "tree_srl_benchmark",
+                "files": ["model_compare_per_target.csv"],
+            },
+            "uncertainty_decomposition.png": {
+                "description": "aleatoric vs epistemic uncertainty scatters",
+                "source_group": "tree_srl_benchmark",
+                "files": ["uncertainty_decomposition.csv", "uncertainty_summary.csv"],
+            },
+            "uncertainty_decomposition_by_target.png": {
+                "description": MANUSCRIPT_SOURCE_MAPPING["uncertainty_decomposition_by_target.png"]["description"],
+                "source_group": "tree_srl_benchmark",
+                "files": ["uncertainty_decomposition.csv", "uncertainty_summary.csv"],
+            },
+            "ode_back_r2_barplot.png": {
+                "description": MANUSCRIPT_SOURCE_MAPPING["ode_back_r2_barplot.png"]["description"],
+                "source_group": "ode_back_validation",
+                "files": [ODE_BACK_SUMMARY_CSV, ODE_BACK_PAIRWISE_CSV],
+            },
         },
+        "manuscript_source_mapping": dict(MANUSCRIPT_SOURCE_MAPPING),
+        "significance_rule": SIGNIFICANCE_RULE_TEXT,
     }
     write_fig3_manifest(outdir, manifest_update)
     outputs["model_compare_manifest.json"] = manifest_path
@@ -4641,13 +4898,13 @@ def build_expected_artifacts(
     benchmark_artifacts = [
         ExpectedArtifact(
             os.path.join(benchmark_figures, "model_compare_r2.png"),
-            "Fig. 3 — TAR vs baselines ($R^2$)",
+            MANUSCRIPT_SOURCE_MAPPING["model_compare_r2.png"]["description"],
             manuscript_cmd,
             "benchmark",
         ),
         ExpectedArtifact(
             os.path.join(benchmark_figures, "target_weight_heatmap.png"),
-            "Target-wise stacking coefficients",
+            MANUSCRIPT_SOURCE_MAPPING["target_weight_heatmap.png"]["description"],
             manuscript_cmd,
             "benchmark",
         ),
@@ -4755,7 +5012,7 @@ def build_expected_artifacts(
         *benchmark_artifacts,
         ExpectedArtifact(
             os.path.join(fixed_umax_figures, "fixed_umax_representative.png"),
-            "Fig. 4A — fixed-Umax representative trajectories (illustrative)",
+            MANUSCRIPT_SOURCE_MAPPING["fixed_umax_representative.png"]["description"],
             fixed_umax_cmd,
             "fixed_umax_validation",
             optional=True,
@@ -4790,14 +5047,14 @@ def build_expected_artifacts(
         ),
         ExpectedArtifact(
             os.path.join(umax_optimization_figures, "umax_score_landscape.png"),
-            "Fig. 5A — Umax-response landscape",
+            MANUSCRIPT_SOURCE_MAPPING["umax_score_landscape.png"]["description"],
             umax_optimization_cmd,
             "umax_optimization",
             optional=True,
         ),
         ExpectedArtifact(
             os.path.join(umax_optimization_figures, "umax_constraint_feasibility.png"),
-            "Fig. 5B — constraint feasibility across Umax",
+            MANUSCRIPT_SOURCE_MAPPING["umax_constraint_feasibility.png"]["description"],
             umax_optimization_cmd,
             "umax_optimization",
             optional=True,
