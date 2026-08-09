@@ -26,14 +26,18 @@ from simulate_case_metrics_fast import (
     effective_backend,
 )
 from tree_srl_benchmark import (
+    BEST_SINGLE_TREE,
+    FORMAL_SIGNIFICANCE_CONTROLS,
     LEGACY_MODEL_NAME_MAP,
+    RANDOM_FOREST,
     TAR_MODEL,
-    comparison_result_label,
-    evaluate_significance_label,
-    permutation_p_value,
+    UNIFORM_TREE_MEAN,
+    build_paired_repeated_significance,
+    load_repeat_split_ratios,
+    normalize_model_name,
+    print_holm_caption_stats,
     repeat_metric_ci,
     safe_r2_score,
-    normalize_model_name,
 )
 
 ODE_BACK_REPEATED_METRICS_CSV = "ode_back_repeated_metrics.csv"
@@ -608,6 +612,35 @@ def repeat_level_summary(
     return pd.DataFrame(summary_rows)
 
 
+def resolve_benchmark_outdir_for_splits(outdir: str, prediction_files: Optional[Sequence[str]] = None) -> str:
+    """Locate the tree_srl_benchmark outdir that owns repeat_metadata.csv for NB ratios."""
+    candidates: List[str] = []
+    if prediction_files:
+        for pred in prediction_files:
+            abs_pred = pred if os.path.isabs(pred) else os.path.normpath(os.path.join(outdir, pred))
+            # .../tree_srl_benchmark/repeats/repeat_XXX/predictions.csv
+            cur = abs_pred
+            for _ in range(4):
+                cur = os.path.dirname(cur)
+                candidates.append(cur)
+    sibling = os.path.normpath(os.path.join(outdir, "..", "tree_srl_benchmark"))
+    candidates.append(sibling)
+    candidates.append(os.path.abspath(os.path.join("results", "tree_srl_benchmark")))
+    seen = set()
+    for cand in candidates:
+        cand = os.path.abspath(cand)
+        if cand in seen:
+            continue
+        seen.add(cand)
+        meta_glob = os.path.join(cand, "repeats", "repeat_*", "repeat_metadata.csv")
+        if glob.glob(meta_glob):
+            return cand
+    raise FileNotFoundError(
+        "Could not locate tree_srl_benchmark repeat_metadata.csv for train/test bio-group "
+        f"ratios (ode_back outdir={outdir})."
+    )
+
+
 def build_ode_back_pairwise_significance(
     repeat_metrics_df: pd.DataFrame,
     *,
@@ -616,83 +649,71 @@ def build_ode_back_pairwise_significance(
     metric_col: str = ODE_BACK_BAR_METRIC,
     n_perm: int = 10_000,
     seed: int = 42,
-    bidirectional_plot_stars: bool = False,
+    bidirectional_plot_stars: bool = True,
+    split_df: Optional[pd.DataFrame] = None,
+    benchmark_outdir: Optional[str] = None,
+    outdir: Optional[str] = None,
+    prediction_files: Optional[Sequence[str]] = None,
 ) -> pd.DataFrame:
-    """Paired repeat-level significance (TAR vs controls)."""
-    metric = metric_col
-    n_repeats = int(repeat_metrics_df["repeat_id"].nunique()) if not repeat_metrics_df.empty else 0
-    rows: List[dict] = []
-    for control_model in control_models:
-        if control_model == srl_model:
-            continue
-        srl_vals = (
-            repeat_metrics_df[repeat_metrics_df["model"] == srl_model]
-            .sort_values("repeat_id")[metric]
-            .to_numpy(dtype=float)
+    """Paired repeat-level significance via Nadeau–Bengio + Holm (Wilcoxon/perm sensitivity only)."""
+    long_df = repeat_metrics_df.copy()
+    if "model" in long_df.columns:
+        long_df["model"] = long_df["model"].map(normalize_model_name)
+    if split_df is None:
+        bench = benchmark_outdir or resolve_benchmark_outdir_for_splits(
+            outdir or ".", prediction_files=prediction_files
         )
-        ctrl_vals = (
-            repeat_metrics_df[repeat_metrics_df["model"] == control_model]
-            .sort_values("repeat_id")[metric]
-            .to_numpy(dtype=float)
-        )
-        n = min(len(srl_vals), len(ctrl_vals))
-        if n == 0:
-            continue
-        srl_vals = srl_vals[:n]
-        ctrl_vals = ctrl_vals[:n]
-        diffs = srl_vals - ctrl_vals
-        mean_srl = float(np.mean(srl_vals))
-        mean_control = float(np.mean(ctrl_vals))
-        mean_diff = float(np.mean(diffs))
-        ci_low = float(np.percentile(diffs, 2.5)) if n > 1 else float("nan")
-        ci_high = float(np.percentile(diffs, 97.5)) if n > 1 else float("nan")
-        srl_better = mean_diff > 0
-        if n > 1 and np.allclose(diffs, 0.0):
-            wilcoxon_p = 1.0
-        elif n > 1:
-            try:
-                wilcoxon_p = float(wilcoxon(diffs).pvalue)
-            except Exception:
-                wilcoxon_p = float("nan")
-        else:
-            wilcoxon_p = float("nan")
-        perm_p = (
-            permutation_p_value(diffs, n_perm=n_perm, seed=seed + abs(hash(metric)) % 10000)
-            if n > 1
-            else float("nan")
-        )
-        p_candidates = [p for p in (wilcoxon_p, perm_p) if np.isfinite(p)]
-        p_for_label = float(min(p_candidates)) if p_candidates else float("nan")
-        star_label, significance_tier = evaluate_significance_label(
-            p_for_label,
-            ci_low,
-            ci_high,
-            n_repeats=n,
-            srl_better=srl_better,
-            bidirectional=bidirectional_plot_stars,
-        )
-        comp_result = comparison_result_label(star_label, significance_tier, srl_better, n)
-        rows.append(
-            {
-                "metric": metric,
-                "srl_model": srl_model,
-                "control_model": control_model,
-                "direction": "higher_is_better",
-                "n_repeats": n,
-                "mean_srl": mean_srl,
-                "mean_control": mean_control,
-                "mean_diff": mean_diff,
-                "CI_low": ci_low,
-                "CI_high": ci_high,
-                "wilcoxon_p": wilcoxon_p,
-                "permutation_p": perm_p,
-                "significance_label": star_label,
-                "significance_tier": significance_tier,
-                "comparison_result": comp_result,
-                "exploratory": bool(n < 10),
-            }
-        )
-    return pd.DataFrame(rows)
+        split_df = load_repeat_split_ratios(bench)
+    formal = [m for m in FORMAL_SIGNIFICANCE_CONTROLS if m in set(map(normalize_model_name, control_models))]
+    return build_paired_repeated_significance(
+        srl_model=normalize_model_name(srl_model),
+        control_models=[normalize_model_name(m) for m in control_models],
+        n_perm=n_perm,
+        seed=seed,
+        single_split_exploratory=int(long_df["repeat_id"].nunique()) < 2,
+        long_df=long_df,
+        split_df=split_df,
+        formal_controls=formal,
+        metric_direction={metric_col: "higher_is_better"},
+        bidirectional=bidirectional_plot_stars,
+    )
+
+
+def recompute_ode_back_pairwise_significance_from_saved(
+    outdir: str,
+    *,
+    n_perm: int = 10_000,
+    seed: int = 42,
+    benchmark_outdir: Optional[str] = None,
+) -> pd.DataFrame:
+    """Rebuild ode_back_pairwise_significance.csv from saved repeat-level metrics."""
+    metrics_path = os.path.join(outdir, ODE_BACK_REPEATED_METRICS_CSV)
+    if not os.path.isfile(metrics_path):
+        raise FileNotFoundError(f"Missing {metrics_path}")
+    repeat_metrics_df = pd.read_csv(metrics_path)
+    pred_files = None
+    manifest_path = os.path.join(outdir, "ode_back_validation_manifest.json")
+    if os.path.isfile(manifest_path):
+        with open(manifest_path, encoding="utf-8") as fh:
+            manifest = json.load(fh)
+        pred_files = manifest.get("prediction_files")
+    control_models = [
+        m
+        for m in dict.fromkeys(repeat_metrics_df["model"].map(normalize_model_name))
+        if m != TAR_MODEL
+    ]
+    pairwise_df = build_ode_back_pairwise_significance(
+        repeat_metrics_df,
+        srl_model=TAR_MODEL,
+        control_models=control_models,
+        n_perm=n_perm,
+        seed=seed,
+        outdir=outdir,
+        benchmark_outdir=benchmark_outdir,
+        prediction_files=pred_files,
+    )
+    pairwise_df.to_csv(os.path.join(outdir, ODE_BACK_PAIRWISE_SIGNIFICANCE_CSV), index=False)
+    return pairwise_df
 
 
 def direct_tthr_from_b0_and_lr(b0: np.ndarray, lr_target: np.ndarray) -> np.ndarray:
@@ -1541,6 +1562,8 @@ def run_ode_back_validation(
         repeat_metrics_df,
         srl_model=TAR_MODEL,
         control_models=control_models,
+        outdir=outdir,
+        prediction_files=pred_paths,
     )
     pairwise_path = os.path.join(outdir, ODE_BACK_PAIRWISE_SIGNIFICANCE_CSV)
     pairwise_df.to_csv(pairwise_path, index=False)
@@ -1561,6 +1584,8 @@ def run_ode_back_validation(
             control_models=[m for m in traj_models if m != TAR_MODEL],
             metric_col=ODE_BACK_TRAJECTORY_R2_METRIC,
             bidirectional_plot_stars=True,
+            outdir=outdir,
+            prediction_files=pred_paths,
         )
         traj_pairwise_df.to_csv(os.path.join(outdir, ODE_BACK_TRAJECTORY_PAIRWISE_CSV), index=False)
 

@@ -5,7 +5,6 @@ import matplotlib.pyplot as plt
 from scipy.stats import linregress
 
 OUT_DIR = Path("results") / "correlation"
-OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # ==========================================
 # 1. Data input (L. lactis)
@@ -30,53 +29,77 @@ data = [
     (73.25,       349400000,    1.082),
 ]
 
-# ==========================================
-# 2. Data processing
-# ==========================================
 
-time_np = np.array([x[0] for x in data])
-cfu_values_np = np.array([x[1] for x in data])
-od_values_np = np.array([x[2] for x in data])
+def main() -> None:
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-# ==========================================
-# 3. Linear regression (OD vs CFU; time points already aligned, no interpolation needed)
-# ==========================================
+    # ==========================================
+    # 2. Data processing
+    # ==========================================
 
-slope, intercept, r_value, p_value, std_err = linregress(od_values_np, cfu_values_np)
-r_squared = r_value**2
+    time_np = np.array([x[0] for x in data])
+    cfu_values_np = np.array([x[1] for x in data])
+    od_values_np = np.array([x[2] for x in data])
 
-# ==========================================
-# 4. Plotting and saving
-# ==========================================
+    # ==========================================
+    # 3. Linear regression (OD vs CFU; time points already aligned, no interpolation needed)
+    # ==========================================
 
-plt.figure(figsize=(8, 6))
+    slope, intercept, r_value, p_value, std_err = linregress(od_values_np, cfu_values_np)
+    r_squared = r_value**2
 
-# Scatter plot
-plt.scatter(od_values_np, cfu_values_np, color='black', alpha=0.6, label='Experimental Data')
+    # ==========================================
+    # 4. Plotting and saving
+    # ==========================================
 
-# Regression line
-x_range = np.linspace(min(od_values_np), max(od_values_np), 100)
-y_pred = slope * x_range + intercept
-plt.plot(x_range, y_pred, color='red', linestyle='--', linewidth=2, label=f'Linear Fit ($R^2={r_squared:.4f}$)')
+    plt.figure(figsize=(8, 6))
 
-# Equation annotation
-equation_text = f'y = {slope:.2e}x + {intercept:.2e}\n$R^2$ = {r_squared:.4f}'
-plt.text(0.05, 0.85, equation_text, transform=plt.gca().transAxes,
-         fontsize=16, bbox=dict(facecolor='white', alpha=0.9, edgecolor='gray'))
+    # Scatter plot
+    plt.scatter(od_values_np, cfu_values_np, color='black', alpha=0.6, label='Experimental Data')
 
-# Labels (bold via LaTeX)
-plt.title(r'$\bf{Correlation\ between\ OD_{600}\ and\ CFU/mL\ (}\boldsymbol{L.\ lactis}\bf{)}$', fontsize=18)
-plt.xlabel(r'$\bf{Optical\ Density\ (OD_{600})}$', fontsize=16)
-plt.ylabel('Viable Cell Count (CFU/mL)', fontsize=16)
-plt.grid(True, linestyle='--', alpha=0.5)
-plt.legend(loc='lower right')
+    # Regression line
+    x_range = np.linspace(min(od_values_np), max(od_values_np), 100)
+    y_pred = slope * x_range + intercept
+    plt.plot(
+        x_range,
+        y_pred,
+        color='red',
+        linestyle='--',
+        linewidth=2,
+        label=f'Linear Fit ($R^2={r_squared:.4f}$)',
+    )
 
-plt.tight_layout()
+    # Equation annotation
+    equation_text = f'y = {slope:.2e}x + {intercept:.2e}\n$R^2$ = {r_squared:.4f}'
+    plt.text(
+        0.05,
+        0.85,
+        equation_text,
+        transform=plt.gca().transAxes,
+        fontsize=16,
+        bbox=dict(facecolor='white', alpha=0.9, edgecolor='gray'),
+    )
 
-# --- Save figures ---
-plt.savefig(OUT_DIR / "lactis_correlation_plot.png", dpi=300)
-plt.savefig(OUT_DIR / "lactis_correlation_plot.svg")
-print(f"L. lactis Correlation R-squared: {r_squared}")
-print(f"Figures saved to {OUT_DIR}/lactis_correlation_plot.png and .svg")
+    # Labels (bold via LaTeX)
+    plt.title(
+        r'$\bf{Correlation\ between\ OD_{600}\ and\ CFU/mL\ (}\boldsymbol{L.\ lactis}\bf{)}$',
+        fontsize=18,
+    )
+    plt.xlabel(r'$\bf{Optical\ Density\ (OD_{600})}$', fontsize=16)
+    plt.ylabel('Viable Cell Count (CFU/mL)', fontsize=16)
+    plt.grid(True, linestyle='--', alpha=0.5)
+    plt.legend(loc='lower right')
 
-plt.show()
+    plt.tight_layout()
+
+    # --- Save figures ---
+    plt.savefig(OUT_DIR / "lactis_correlation_plot.png", dpi=300)
+    plt.savefig(OUT_DIR / "lactis_correlation_plot.svg")
+    print(f"L. lactis Correlation R-squared: {r_squared}")
+    print(f"Figures saved to {OUT_DIR}/lactis_correlation_plot.png and .svg")
+
+    plt.show()
+
+
+if __name__ == "__main__":
+    main()

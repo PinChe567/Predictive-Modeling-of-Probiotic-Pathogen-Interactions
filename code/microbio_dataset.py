@@ -37,10 +37,16 @@ from multi_pathogen_simulator import (
     BIO_COLS,
     B0_S_REP,
     DEFAULT_ODE_PROFILE_NAME,
+    ECOLI_OD_TO_CFU_INTERCEPT,
+    ECOLI_OD_TO_CFU_R2,
+    ECOLI_OD_TO_CFU_SLOPE,
     GAMMA_S_REP,
     K_PATHOGEN,
     K_REP,
     KPI_COLS,
+    LLACTIS_OD_TO_CFU_INTERCEPT,
+    LLACTIS_OD_TO_CFU_R2,
+    LLACTIS_OD_TO_CFU_SLOPE,
     MU_REP,
     N_STRAINS,
     P0_S_REP,
@@ -432,12 +438,13 @@ def build_ode_parameter_sources_df() -> pd.DataFrame:
         "not a direct experimental fit to the paper_figure value"
     )
     # CFU-scale OD calibration provenance only (not ODE integration inputs).
-    ecoli_od_slope = 197224987.18551347
-    ecoli_od_intercept = -24156487.659915283
-    ecoli_od_r2 = 0.9016120870162722
-    llactis_od_slope = 297323449.0240535
-    llactis_od_intercept = -15652116.864199936
-    llactis_od_r2 = 0.8568048924855741
+    # Must match multi_pathogen_simulator OD–CFU constants (paired-measurement fits).
+    ecoli_od_slope = ECOLI_OD_TO_CFU_SLOPE
+    ecoli_od_intercept = ECOLI_OD_TO_CFU_INTERCEPT
+    ecoli_od_r2 = ECOLI_OD_TO_CFU_R2
+    llactis_od_slope = LLACTIS_OD_TO_CFU_SLOPE
+    llactis_od_intercept = LLACTIS_OD_TO_CFU_INTERCEPT
+    llactis_od_r2 = LLACTIS_OD_TO_CFU_R2
 
     rows = [
         {
@@ -616,6 +623,36 @@ def _assert_ode_parameter_sources_match_paper_figure(
             raise AssertionError(
                 f"ode parameter sources value_used mismatch for {code_parameter}: "
                 f"table={value_used!r}, PAPER_FIGURE_PROFILE={expected!r}"
+            )
+
+    # OD–CFU provenance rows must match multi_pathogen_simulator constants exactly.
+    od_expected = {
+        "E_coli_OD600": (
+            f"CFU = {ECOLI_OD_TO_CFU_SLOPE} * OD600 + ({ECOLI_OD_TO_CFU_INTERCEPT})",
+            ECOLI_OD_TO_CFU_R2,
+        ),
+        "L_lactis_OD600": (
+            f"CFU = {LLACTIS_OD_TO_CFU_SLOPE} * OD600 + ({LLACTIS_OD_TO_CFU_INTERCEPT})",
+            LLACTIS_OD_TO_CFU_R2,
+        ),
+    }
+    for code_parameter, (formula, r2) in od_expected.items():
+        sub = df[df["code_parameter"] == code_parameter]
+        if sub.empty:
+            raise AssertionError(
+                f"ode parameter sources table missing code_parameter={code_parameter!r}"
+            )
+        value_used = str(sub.iloc[0]["value_used"])
+        fit_r2 = float(sub.iloc[0]["fit_R2"])
+        if value_used != formula:
+            raise AssertionError(
+                f"OD–CFU provenance formula mismatch for {code_parameter}: "
+                f"table={value_used!r}, simulator={formula!r}"
+            )
+        if fit_r2 != r2:
+            raise AssertionError(
+                f"OD–CFU provenance R2 mismatch for {code_parameter}: "
+                f"table={fit_r2!r}, simulator={r2!r}"
             )
     assumption = df[df["code_parameter"] == "alpha,beta,rho,mu,eta,lambda_amp"]
     if assumption.empty:

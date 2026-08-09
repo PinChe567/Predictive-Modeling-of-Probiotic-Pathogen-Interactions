@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import hashlib
 import itertools
 import json
 import os
@@ -792,16 +793,20 @@ MANUSCRIPT_CONTROL_MODELS = [RANDOM_FOREST, BEST_SINGLE_TREE, UNIFORM_TREE_MEAN]
 MODEL_DISPLAY_LABELS = {
     TAR_MODEL: "TAR",
     RANDOM_FOREST: "RF",
-    BEST_SINGLE_TREE: "Best tree",
+    BEST_SINGLE_TREE: "BestTree",
     UNIFORM_TREE_MEAN: "UniformTreeMean",
     "ExtraTrees": "ET",
 }
 
 MAIN_BAR_ORDER = [TAR_MODEL, RANDOM_FOREST, BEST_SINGLE_TREE, UNIFORM_TREE_MEAN]
 
+# Formal TAR-vs-control comparisons eligible for Holm-adjusted manuscript stars.
+# BestSingleTree is validation-selected and treated as an oracle diagnostic (no formal star).
+FORMAL_SIGNIFICANCE_CONTROLS = [RANDOM_FOREST, UNIFORM_TREE_MEAN]
+ORACLE_DIAGNOSTIC_CONTROLS = frozenset({BEST_SINGLE_TREE})
+
 SIGNIFICANCE_PLOT_SPECS = [
     (TAR_MODEL, RANDOM_FOREST),
-    (TAR_MODEL, BEST_SINGLE_TREE),
     (TAR_MODEL, UNIFORM_TREE_MEAN),
 ]
 
@@ -1715,6 +1720,7 @@ def aggregate_repeated_split_summaries(
 
 
 def significance_label(p_value: float) -> str:
+    """Map a Holm-adjusted p-value to a manuscript star label."""
     if not np.isfinite(p_value):
         return "na"
     if p_value < 0.0001:
@@ -1728,6 +1734,76 @@ def significance_label(p_value: float) -> str:
     return "ns"
 
 
+def stable_stat_seed(global_seed: int, metric: str, control_model: str) -> int:
+    """Deterministic non-Python-hash seed for sensitivity permutations."""
+    payload = f"{int(global_seed)}|{metric}|{control_model}".encode("utf-8")
+    digest = hashlib.sha256(payload).hexdigest()
+    return int(digest[:16], 16) % (2**31 - 1)
+
+
+def holm_adjust(p_values: Sequence[float]) -> List[float]:
+    """Holm step-down adjusted p-values (same order as input)."""
+    m = len(p_values)
+    if m == 0:
+        return []
+    finite = [(i, float(p)) for i, p in enumerate(p_values) if np.isfinite(p)]
+    out = [float("nan")] * m
+    if not finite:
+        return out
+    order = sorted(finite, key=lambda t: t[1])
+    adjusted_sorted: List[float] = []
+    running = 0.0
+    for rank, (_, p) in enumerate(order):
+        cand = min(1.0, (len(order) - rank) * p)
+        running = max(running, cand)
+        adjusted_sorted.append(running)
+    for (idx, _), p_adj in zip(order, adjusted_sorted):
+        out[idx] = float(p_adj)
+    return out
+
+
+def nadeau_bengio_corrected_ttest(
+    diffs: np.ndarray,
+    n_train_groups: np.ndarray,
+    n_test_groups: np.ndarray,
+) -> Tuple[float, float, float, float, float]:
+    """Two-sided Nadeau–Bengio corrected resampled t-test on paired differences.
+
+    corrected variance = (1/n_repeats + mean(n_test/n_train)) * sample_variance(diffs)
+    df = n_repeats - 1
+
+    Returns
+    -------
+    mean_diff, t_stat, p_raw, mean_test_over_train, corrected_variance
+    """
+    diffs = np.asarray(diffs, dtype=float)
+    n_train_groups = np.asarray(n_train_groups, dtype=float)
+    n_test_groups = np.asarray(n_test_groups, dtype=float)
+    n = int(diffs.size)
+    if n < 2:
+        return float(np.mean(diffs)) if n else float("nan"), float("nan"), float("nan"), float("nan"), float("nan")
+    if n_train_groups.size != n or n_test_groups.size != n:
+        raise ValueError(
+            "nadeau_bengio_corrected_ttest: train/test group counts must align with paired differences"
+        )
+    if np.any(~np.isfinite(n_train_groups)) or np.any(~np.isfinite(n_test_groups)):
+        raise ValueError("nadeau_bengio_corrected_ttest: non-finite train/test group counts")
+    if np.any(n_train_groups <= 0) or np.any(n_test_groups <= 0):
+        raise ValueError("nadeau_bengio_corrected_ttest: train/test group counts must be positive")
+    mean_diff = float(np.mean(diffs))
+    sample_var = float(np.var(diffs, ddof=1))
+    mean_ratio = float(np.mean(n_test_groups / n_train_groups))
+    corrected_var = (1.0 / n + mean_ratio) * sample_var
+    if corrected_var <= 0.0 or not np.isfinite(corrected_var):
+        if np.allclose(diffs, 0.0):
+            return mean_diff, 0.0, 1.0, mean_ratio, corrected_var
+        return mean_diff, float("nan"), float("nan"), mean_ratio, corrected_var
+    t_stat = mean_diff / float(np.sqrt(corrected_var))
+    df = n - 1
+    p_raw = float(2.0 * stats.t.sf(abs(t_stat), df))
+    return mean_diff, float(t_stat), p_raw, mean_ratio, float(corrected_var)
+
+
 def evaluate_significance_label(
     p_value: float,
     ci_low: float,
@@ -1738,45 +1814,26 @@ def evaluate_significance_label(
     force_single_split_significance: bool = False,
     bidirectional: bool = False,
 ) -> Tuple[str, str]:
-    """Return (star_label for plotting, manuscript_tier).
+    """Return (star_label, manuscript_tier) from a Holm-adjusted p-value only.
 
-    By default stars are shown only when SRL is better. With ``bidirectional=True``,
-    significant control advantages also receive star labels for plotting.
+    Confidence intervals and Wilcoxon/permutation p-values must not override the star level.
     """
-    if not srl_better:
-        if not bidirectional:
-            return "ns", "control_better"
-        if single_split_exploratory and not force_single_split_significance:
-            return "ns", "single_split"
-        if n_repeats < 2:
-            return "ns", "ns"
-        stars = significance_label(p_value)
-        if (
-            stars == "ns"
-            and np.isfinite(ci_high)
-            and ci_high < 0.0
-        ):
-            stars = "*"
-        if stars == "ns":
-            return "ns", "control_better"
-        if n_repeats < 10:
-            return stars, "exploratory_control_better"
-        return stars, "formal_control_better"
+    del ci_low, ci_high  # retained for API compatibility; unused for star assignment
     if single_split_exploratory and not force_single_split_significance:
         return "ns", "single_split"
     if n_repeats < 2:
         return "ns", "ns"
     stars = significance_label(p_value)
-    if (
-        stars == "ns"
-        and srl_better
-        and np.isfinite(ci_low)
-        and np.isfinite(ci_high)
-        and ci_low > 0.0
-    ):
-        stars = "*"
     if stars == "ns":
+        if not srl_better:
+            return "ns", "control_better"
         return "ns", "ns"
+    if not srl_better:
+        if not bidirectional:
+            return "ns", "control_better"
+        if n_repeats < 10:
+            return stars, "exploratory_control_better"
+        return stars, "formal_control_better"
     if n_repeats < 10:
         return stars, "exploratory"
     return stars, "formal"
@@ -1788,6 +1845,8 @@ def comparison_result_label(
     srl_better: bool,
     n_repeats: int,
 ) -> str:
+    if significance_tier == "oracle_diagnostic":
+        return "oracle_diagnostic"
     if significance_tier == "control_better":
         return "control_better"
     if significance_tier in {"formal_control_better", "exploratory_control_better"}:
@@ -1804,6 +1863,7 @@ def comparison_result_label(
 
 
 def permutation_p_value(diffs: np.ndarray, n_perm: int, seed: int) -> float:
+    """Sign-flip permutation p-value (sensitivity analysis only; never used for plotted stars)."""
     if len(diffs) < 2:
         return float("nan")
     observed = float(np.mean(diffs))
@@ -1815,6 +1875,63 @@ def permutation_p_value(diffs: np.ndarray, n_perm: int, seed: int) -> float:
         if abs(perm_mean) >= abs(observed):
             count += 1
     return float((count + 1) / (n_perm + 1))
+
+
+def load_repeat_split_ratios(outdir: str) -> pd.DataFrame:
+    """Load per-repeat train/test bio-group counts from repeat_metadata.csv files."""
+    paths = sorted(
+        glob.glob(os.path.join(outdir, "repeats", "repeat_*", "repeat_metadata.csv"))
+    )
+    if not paths:
+        raise FileNotFoundError(
+            f"No repeat_metadata.csv files under {outdir}/repeats/repeat_*/; "
+            "cannot compute Nadeau–Bengio corrected tests without train/test group counts."
+        )
+    frames: List[pd.DataFrame] = []
+    for path in paths:
+        df = pd.read_csv(path)
+        required = {"repeat_id", "train_bio_groups", "test_bio_groups"}
+        missing = required - set(df.columns)
+        if missing:
+            raise ValueError(f"{path} missing required columns {sorted(missing)}")
+        sub = df.loc[:, ["repeat_id", "train_bio_groups", "test_bio_groups"]].copy()
+        if len(sub) != 1:
+            raise ValueError(f"{path} must contain exactly one metadata row; found {len(sub)}")
+        frames.append(sub)
+    out = pd.concat(frames, ignore_index=True)
+    out["repeat_id"] = out["repeat_id"].astype(int)
+    out["train_bio_groups"] = out["train_bio_groups"].astype(float)
+    out["test_bio_groups"] = out["test_bio_groups"].astype(float)
+    if out["repeat_id"].duplicated().any():
+        raise ValueError(f"Duplicate repeat_id values in metadata under {outdir}")
+    if np.any(out["train_bio_groups"] <= 0) or np.any(out["test_bio_groups"] <= 0):
+        raise ValueError(f"Non-positive train/test bio-group counts under {outdir}")
+    ratios = out["test_bio_groups"] / out["train_bio_groups"]
+    if not np.all(np.isfinite(ratios)):
+        raise ValueError(f"Non-finite train/test bio-group ratios under {outdir}")
+    # Inconsistency guard: ratios should be stable across repeats for the same design.
+    if float(np.nanmax(ratios) - np.nanmin(ratios)) > 1e-9:
+        raise ValueError(
+            f"Inconsistent train/test bio-group ratios across repeats under {outdir}: "
+            f"min={float(np.nanmin(ratios))}, max={float(np.nanmax(ratios))}"
+        )
+    return out.sort_values("repeat_id").reset_index(drop=True)
+
+
+def _align_split_counts_to_diffs(
+    repeat_ids: np.ndarray,
+    split_df: pd.DataFrame,
+) -> Tuple[np.ndarray, np.ndarray]:
+    meta = split_df.set_index("repeat_id")
+    missing = [int(r) for r in repeat_ids if int(r) not in meta.index]
+    if missing:
+        raise ValueError(
+            f"Missing train/test bio-group metadata for repeat_id(s) {missing[:10]}"
+            + ("..." if len(missing) > 10 else "")
+        )
+    train = meta.loc[list(map(int, repeat_ids)), "train_bio_groups"].to_numpy(dtype=float)
+    test = meta.loc[list(map(int, repeat_ids)), "test_bio_groups"].to_numpy(dtype=float)
+    return train, test
 
 
 def identify_final_tar_model(repeat_result: RepeatResult) -> str:
@@ -1832,44 +1949,78 @@ identify_final_tree_srl_model = identify_final_tar_model
 
 
 def build_paired_repeated_significance(
-    repeat_results: List[RepeatResult],
-    srl_model: str,
-    control_models: Sequence[str],
-    n_perm: int,
-    seed: int,
+    repeat_results: Optional[List[RepeatResult]] = None,
+    srl_model: str = TAR_MODEL,
+    control_models: Sequence[str] = (),
+    n_perm: int = 5000,
+    seed: int = 42,
     single_split_exploratory: bool = False,
     force_single_split_significance: bool = False,
+    *,
+    long_df: Optional[pd.DataFrame] = None,
+    split_df: Optional[pd.DataFrame] = None,
+    outdir: Optional[str] = None,
+    formal_controls: Optional[Sequence[str]] = None,
+    metric_direction: Optional[Dict[str, str]] = None,
+    bidirectional: bool = True,
 ) -> pd.DataFrame:
-    long_df = build_repeated_parameter_metrics(repeat_results)
-    n_repeats = long_df["repeat_id"].nunique()
+    """Paired repeat-level significance with Nadeau–Bengio + Holm (Wilcoxon/perm sensitivity only)."""
+    if long_df is None:
+        if repeat_results is None:
+            raise ValueError("build_paired_repeated_significance requires repeat_results or long_df")
+        long_df = build_repeated_parameter_metrics(repeat_results)
+    long_df = long_df.copy()
+    if "model" in long_df.columns:
+        long_df["model"] = long_df["model"].map(normalize_model_name)
+    if split_df is None:
+        if outdir is None:
+            raise ValueError(
+                "build_paired_repeated_significance requires split_df or outdir with repeat_metadata.csv"
+            )
+        split_df = load_repeat_split_ratios(outdir)
+    direction_map = dict(metric_direction or METRIC_DIRECTION)
+    formal = list(formal_controls or FORMAL_SIGNIFICANCE_CONTROLS)
+    n_repeats = int(long_df["repeat_id"].nunique())
     rows: List[dict] = []
+
     for control_model in control_models:
+        control_model = normalize_model_name(control_model)
         if control_model == srl_model:
             continue
-        for metric, direction in METRIC_DIRECTION.items():
-            srl_vals = (
-                long_df[long_df["model"] == srl_model]
-                .sort_values("repeat_id")[metric]
-                .to_numpy(dtype=float)
-            )
-            ctrl_vals = (
-                long_df[long_df["model"] == control_model]
-                .sort_values("repeat_id")[metric]
-                .to_numpy(dtype=float)
-            )
-            n = min(len(srl_vals), len(ctrl_vals))
-            if n == 0:
+        for metric, direction in direction_map.items():
+            if metric not in long_df.columns:
                 continue
-            srl_vals = srl_vals[:n]
-            ctrl_vals = ctrl_vals[:n]
+            srl_frame = (
+                long_df[long_df["model"] == srl_model]
+                .sort_values("repeat_id")[["repeat_id", metric]]
+                .drop_duplicates("repeat_id")
+            )
+            ctrl_frame = (
+                long_df[long_df["model"] == control_model]
+                .sort_values("repeat_id")[["repeat_id", metric]]
+                .drop_duplicates("repeat_id")
+            )
+            merged = srl_frame.merge(ctrl_frame, on="repeat_id", suffixes=("_srl", "_ctrl"))
+            if merged.empty:
+                continue
+            repeat_ids = merged["repeat_id"].to_numpy(dtype=int)
+            srl_vals = merged[f"{metric}_srl"].to_numpy(dtype=float)
+            ctrl_vals = merged[f"{metric}_ctrl"].to_numpy(dtype=float)
+            n = int(len(merged))
             diffs = srl_vals - ctrl_vals
             mean_srl = float(np.mean(srl_vals))
             mean_control = float(np.mean(ctrl_vals))
             mean_diff = float(np.mean(diffs))
+            median_diff = float(np.median(diffs))
             ci_low = float(np.percentile(diffs, 2.5)) if n > 1 else float("nan")
             ci_high = float(np.percentile(diffs, 97.5)) if n > 1 else float("nan")
-            higher_is_better = METRIC_DIRECTION[metric] == "higher_is_better"
+            higher_is_better = direction == "higher_is_better"
             srl_better = mean_diff > 0 if higher_is_better else mean_diff < 0
+            train_counts, test_counts = _align_split_counts_to_diffs(repeat_ids, split_df)
+            mean_diff_nb, t_stat, p_raw, mean_ratio, corr_var = nadeau_bengio_corrected_ttest(
+                diffs, train_counts, test_counts
+            )
+            del mean_diff_nb, corr_var
             if n > 1 and np.allclose(diffs, 0.0):
                 wilcoxon_p = 1.0
             elif n > 1:
@@ -1879,20 +2030,12 @@ def build_paired_repeated_significance(
                     wilcoxon_p = float("nan")
             else:
                 wilcoxon_p = float("nan")
-            perm_p = permutation_p_value(diffs, n_perm=n_perm, seed=seed + abs(hash(metric)) % 10000) if n > 1 else float("nan")
-            p_candidates = [p for p in (wilcoxon_p, perm_p) if np.isfinite(p)]
-            p_for_label = float(min(p_candidates)) if p_candidates else float("nan")
-            star_label, significance_tier = evaluate_significance_label(
-                p_for_label,
-                ci_low,
-                ci_high,
-                n_repeats=n,
-                srl_better=srl_better,
-                single_split_exploratory=single_split_exploratory,
-                force_single_split_significance=force_single_split_significance,
+            perm_seed = stable_stat_seed(seed, metric, control_model)
+            perm_p = (
+                permutation_p_value(diffs, n_perm=n_perm, seed=perm_seed) if n > 1 else float("nan")
             )
-            comp_result = comparison_result_label(star_label, significance_tier, srl_better, n)
-            exploratory = bool(n < 10 or single_split_exploratory)
+            is_oracle = control_model in ORACLE_DIAGNOSTIC_CONTROLS
+            is_formal = control_model in formal and not is_oracle
             rows.append(
                 {
                     "metric": metric,
@@ -1903,27 +2046,82 @@ def build_paired_repeated_significance(
                     "mean_srl": mean_srl,
                     "mean_control": mean_control,
                     "mean_diff": mean_diff,
+                    "median_diff": median_diff,
                     "CI_low": ci_low,
                     "CI_high": ci_high,
+                    "nadeau_bengio_t": t_stat,
+                    "corrected_p_raw": p_raw,
+                    "corrected_p_holm": float("nan"),  # filled below for formal family
+                    "train_val_group_ratio": mean_ratio,
                     "wilcoxon_p": wilcoxon_p,
                     "permutation_p": perm_p,
-                    "significance_label": star_label,
-                    "significance_tier": significance_tier,
-                    "comparison_result": comp_result,
-                    "exploratory": exploratory,
+                    "srl_better": bool(srl_better),
+                    "is_formal_comparison": bool(is_formal),
+                    "is_oracle_diagnostic": bool(is_oracle),
+                    "significance_label": "ns",
+                    "significance_tier": "oracle_diagnostic" if is_oracle else "pending",
+                    "comparison_result": "oracle_diagnostic" if is_oracle else "pending",
+                    "exploratory": bool(n < 10 or single_split_exploratory or not is_formal),
                 }
             )
-    return pd.DataFrame(rows)
+
+    if not rows:
+        return pd.DataFrame()
+    out = pd.DataFrame(rows)
+
+    # Holm adjust within each metric across pre-specified formal TAR-control comparisons only.
+    for metric, grp_idx in out.groupby("metric").groups.items():
+        idxs = list(grp_idx)
+        formal_idxs = [i for i in idxs if bool(out.at[i, "is_formal_comparison"])]
+        p_raws = [float(out.at[i, "corrected_p_raw"]) for i in formal_idxs]
+        p_adj = holm_adjust(p_raws)
+        for i, p_h in zip(formal_idxs, p_adj):
+            out.at[i, "corrected_p_holm"] = p_h
+            star_label, tier = evaluate_significance_label(
+                p_h,
+                float(out.at[i, "CI_low"]),
+                float(out.at[i, "CI_high"]),
+                n_repeats=int(out.at[i, "n_repeats"]),
+                srl_better=bool(out.at[i, "srl_better"]),
+                single_split_exploratory=single_split_exploratory,
+                force_single_split_significance=force_single_split_significance,
+                bidirectional=bidirectional,
+            )
+            out.at[i, "significance_label"] = star_label
+            out.at[i, "significance_tier"] = tier
+            out.at[i, "comparison_result"] = comparison_result_label(
+                star_label, tier, bool(out.at[i, "srl_better"]), int(out.at[i, "n_repeats"])
+            )
+            out.at[i, "exploratory"] = bool(
+                int(out.at[i, "n_repeats"]) < 10 or single_split_exploratory
+            )
+        for i in idxs:
+            if bool(out.at[i, "is_oracle_diagnostic"]):
+                out.at[i, "significance_label"] = "ns"
+                out.at[i, "significance_tier"] = "oracle_diagnostic"
+                out.at[i, "comparison_result"] = "oracle_diagnostic"
+                out.at[i, "exploratory"] = True
+            elif not bool(out.at[i, "is_formal_comparison"]) and out.at[i, "significance_tier"] == "pending":
+                # Non-pre-specified controls: retain NB/Wilcoxon/perm for sensitivity, no plotted star.
+                out.at[i, "significance_label"] = "ns"
+                out.at[i, "significance_tier"] = "non_prespecified"
+                out.at[i, "comparison_result"] = "not_significant"
+                out.at[i, "exploratory"] = True
+    return out
 
 
 def build_parameter_pairwise_significance(
-    repeat_results: List[RepeatResult],
-    srl_models: Sequence[str],
-    control_models: Sequence[str],
-    n_perm: int,
-    seed: int,
+    repeat_results: Optional[List[RepeatResult]] = None,
+    srl_models: Sequence[str] = (),
+    control_models: Sequence[str] = (),
+    n_perm: int = 5000,
+    seed: int = 42,
     single_split_exploratory: bool = False,
     force_single_split_significance: bool = False,
+    *,
+    long_df: Optional[pd.DataFrame] = None,
+    split_df: Optional[pd.DataFrame] = None,
+    outdir: Optional[str] = None,
 ) -> pd.DataFrame:
     frames = []
     for srl_model in srl_models:
@@ -1935,6 +2133,9 @@ def build_parameter_pairwise_significance(
             seed=seed,
             single_split_exploratory=single_split_exploratory,
             force_single_split_significance=force_single_split_significance,
+            long_df=long_df,
+            split_df=split_df,
+            outdir=outdir,
         )
         if not df.empty:
             frames.append(df)
@@ -1943,6 +2144,73 @@ def build_parameter_pairwise_significance(
     return pd.concat(frames, ignore_index=True).sort_values(
         ["metric", "srl_model", "control_model"]
     ).reset_index(drop=True)
+
+
+def recompute_parameter_pairwise_significance_from_saved(
+    outdir: str,
+    *,
+    n_perm: int = 5000,
+    seed: int = 42,
+    control_models: Optional[Sequence[str]] = None,
+) -> pd.DataFrame:
+    """Rebuild parameter_pairwise_significance.csv from saved repeat-level metrics + metadata."""
+    metrics_path = os.path.join(outdir, "repeated_parameter_metrics.csv")
+    if not os.path.isfile(metrics_path):
+        raise FileNotFoundError(f"Missing {metrics_path}")
+    long_df = pd.read_csv(metrics_path)
+    long_df["model"] = long_df["model"].map(normalize_model_name)
+    split_df = load_repeat_split_ratios(outdir)
+    controls = list(
+        control_models
+        or [m for m in MANUSCRIPT_CONTROL_MODELS if m in set(long_df["model"])]
+    )
+    pairwise_df = build_parameter_pairwise_significance(
+        srl_models=[TAR_MODEL],
+        control_models=controls,
+        n_perm=n_perm,
+        seed=seed,
+        single_split_exploratory=int(long_df["repeat_id"].nunique()) < 2,
+        long_df=long_df,
+        split_df=split_df,
+        outdir=outdir,
+    )
+    out_path = os.path.join(outdir, "parameter_pairwise_significance.csv")
+    pairwise_df.to_csv(out_path, index=False)
+    return pairwise_df
+
+
+def print_holm_caption_stats(pairwise_df: pd.DataFrame, *, title: str) -> None:
+    """Print Holm-adjusted p-values and paired effects for manuscript captions."""
+    if pairwise_df.empty:
+        print(f"[{title}] no pairwise rows")
+        return
+    print(f"\n=== {title}: Holm-adjusted p-values and paired effects ===")
+    cols = [
+        c
+        for c in (
+            "metric",
+            "control_model",
+            "mean_diff",
+            "median_diff",
+            "nadeau_bengio_t",
+            "corrected_p_raw",
+            "corrected_p_holm",
+            "train_val_group_ratio",
+            "significance_label",
+            "wilcoxon_p",
+            "permutation_p",
+        )
+        if c in pairwise_df.columns
+    ]
+    show = pairwise_df.copy()
+    if "is_formal_comparison" in show.columns:
+        formal = show[show["is_formal_comparison"].astype(bool)]
+        if not formal.empty:
+            show = formal
+    for _, row in show.sort_values(["metric", "control_model"]).iterrows():
+        parts = [f"{c}={row[c]}" for c in cols]
+        print(" | ".join(parts))
+    print("=== end ===\n")
 
 
 def run_single_repeat(
@@ -3114,6 +3382,14 @@ def main() -> None:
         )
 
     control_models = [m for m in MANUSCRIPT_CONTROL_MODELS if m in repeated_metrics_df["model"].values]
+    split_df = build_repeat_metadata_rows(repeat_results)[
+        ["repeat_id", "train_bio_groups", "test_bio_groups"]
+    ].copy()
+    if split_df["train_bio_groups"].isna().any() or split_df["test_bio_groups"].isna().any():
+        raise ValueError(
+            "Missing train_bio_groups/test_bio_groups in repeat split_metadata; "
+            "cannot compute Nadeau–Bengio corrected significance."
+        )
     pairwise_df = build_parameter_pairwise_significance(
         repeat_results,
         srl_models=[TAR_MODEL],
@@ -3122,6 +3398,8 @@ def main() -> None:
         seed=args.seed,
         single_split_exploratory=args.n_repeats == 1,
         force_single_split_significance=args.force_single_split_significance,
+        split_df=split_df,
+        outdir=args.outdir,
     )
 
     repeat_metadata_rows = build_repeat_metadata_rows(repeat_results).to_dict(orient="records")

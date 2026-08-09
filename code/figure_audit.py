@@ -41,7 +41,7 @@ FS_PANEL = 12
 FS_LEGEND = 11
 FS_LEGEND_SM = 10
 FS_ANNOT = 11
-FS_SIG = 12
+FS_SIG = 14.5
 FS_NOTE = 10
 FS_TRAJECTORY_TITLE = 14
 FS_ODE_BACK = 13
@@ -131,6 +131,48 @@ def finalize_figure_layout(
     fig.tight_layout(**kwargs)
 
 
+def assert_figure_artists_inside_canvas(fig, *, context: str = "figure") -> None:
+    """After draw: titles, ticks, legends, annotations, and axis labels stay in-canvas."""
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    fig_bbox = fig.bbox
+    pad_px = 6.0
+    artists = []
+    for ax in fig.axes:
+        artists.extend([ax.title, ax.xaxis.label, ax.yaxis.label])
+        artists.extend([t for t in ax.get_xticklabels() if t.get_visible()])
+        artists.extend([t for t in ax.get_yticklabels() if t.get_visible()])
+        leg = ax.get_legend()
+        if leg is not None:
+            artists.append(leg)
+    artists.extend(list(fig.legends))
+    artists.extend(list(getattr(fig, "texts", [])))
+    for artist in artists:
+        if artist is None or not getattr(artist, "get_visible", lambda: True)():
+            continue
+        text = getattr(artist, "get_text", lambda: "")()
+        if isinstance(text, str) and not str(text).strip() and not hasattr(artist, "get_texts"):
+            continue
+        try:
+            bbox = artist.get_window_extent(renderer=renderer)
+        except Exception:
+            continue
+        if bbox.width <= 0 or bbox.height <= 0:
+            continue
+        if (
+            bbox.x0 < fig_bbox.x0 - pad_px
+            or bbox.y0 < fig_bbox.y0 - pad_px
+            or bbox.x1 > fig_bbox.x1 + pad_px
+            or bbox.y1 > fig_bbox.y1 + pad_px
+        ):
+            label = text if isinstance(text, str) and text.strip() else type(artist).__name__
+            raise RuntimeError(
+                f"{context}: text/artist {label!r} extends outside the figure canvas "
+                f"(bbox={tuple(round(float(v), 1) for v in (bbox.x0, bbox.y0, bbox.x1, bbox.y1))}, "
+                f"canvas={tuple(round(float(v), 1) for v in (fig_bbox.x0, fig_bbox.y0, fig_bbox.x1, fig_bbox.y1))})."
+            )
+
+
 def place_figure_legend_below(
     fig,
     handles,
@@ -164,7 +206,7 @@ def save_figure(
     fig,
     outpath: str,
     *,
-    dpi: int = 300,
+    dpi: int = 600,
     bbox_inches: str = "tight",
     **kwargs,
 ) -> Tuple[str, str]:
@@ -257,8 +299,8 @@ LEGACY_MODEL_NAME_MAP = {
 MODEL_DISPLAY_LABELS = {
     TAR_MODEL: "TAR",
     RANDOM_FOREST: "RF",
-    BEST_SINGLE_TREE: "Best tree",
-    UNIFORM_TREE_MEAN: "Uniform mean",
+    BEST_SINGLE_TREE: "BestTree",
+    UNIFORM_TREE_MEAN: "UniformTreeMean",
     "ExtraTrees": "ET",
     "Legacy SRL": "Legacy SRL",
     "LegacySRL": "Legacy SRL",
@@ -467,7 +509,7 @@ FIG5_MAIN_SUMMARY_METRICS: Tuple[Tuple[str, str], ...] = (
 
 FIG5_ABLATION_SHORT_LABELS: Dict[str, str] = {
     "TAR_optimized": "Optimized",
-    "TAR_fixed_training_median": "Median fixed",
+    "TAR_fixed_training_median": "Training median",
     "TAR_fixed_training_tuned_global": "Tuned global",
 }
 
@@ -478,7 +520,7 @@ FIG5_ABLATION_BAR_COLORS: Dict[str, str] = {
 }
 
 FIG5_ODE_POLICY_SHORT_LABELS: Dict[str, str] = {
-    "TAR_fixed_training_median": "Median fixed",
+    "TAR_fixed_training_median": "Training median",
     "TAR_fixed_training_tuned_global": "Tuned global",
     "TAR_optimized": "Optimized",
 }
@@ -494,9 +536,12 @@ UMAX_OPTIMIZATION_MANIFEST_JSON = "umax_optimization_manifest.json"
 FIG5_PLOT_MANIFEST_JSON = "fig5_plot_manifest.json"
 
 SIGNIFICANCE_RULE_TEXT = (
-    "TAR leftmost; compare TAR vs each control only; "
-    "bidirectional stars (↑ = TAR better, ↓ = control better) when formal significance supports either direction; "
-    "exact p-values and paired differences retained in CSV; no stars when n_repeats < 10"
+    "TAR leftmost; formal stars from two-sided Nadeau–Bengio corrected resampled t-tests "
+    "on paired repeat differences with Holm adjustment within each displayed metric; "
+    "star levels use corrected_p_holm only (*,**,***,****); "
+    "Wilcoxon and sign-flip permutation p-values are sensitivity columns only; "
+    "BestSingleTree is an outer-validation oracle diagnostic (Best tree (oracle)) and is "
+    "excluded from formal TAR-vs-control stars; no formal stars when n_repeats < 10"
 )
 
 MODEL_BAR_COLORS: Dict[str, str] = {
@@ -515,7 +560,6 @@ CORE_BENCHMARK_MODELS = frozenset(MAIN_COMPARE_ORDER)
 SIGNIFICANCE_PLOT_SPECS = [
     (TAR_MODEL, RANDOM_FOREST),
     (TAR_MODEL, UNIFORM_TREE_MEAN),
-    (TAR_MODEL, BEST_SINGLE_TREE),
 ]
 
 
@@ -612,11 +656,18 @@ def plot_metric_barplot(
     colors = colors_for_models(model_names)
     bars = ax.bar(x, y, edgecolor="white", linewidth=1.0, color=colors, width=0.72)
     ax.set_xticks(x)
-    ax.set_xticklabels(display_labels, rotation=28, ha="right", fontsize=10)
-    ax.tick_params(axis="x", pad=5, labelsize=10)
-    ax.tick_params(axis="y", labelsize=10)
-    ax.set_ylabel(ylabel, fontsize=12)
-    ax.set_title(title, pad=4, fontsize=13)
+    tick_fs = 11.5
+    rotate = 16 if any(len(str(lbl)) > 8 for lbl in display_labels) else 0
+    ax.set_xticklabels(
+        display_labels,
+        rotation=rotate,
+        ha="right" if rotate else "center",
+        fontsize=tick_fs,
+    )
+    ax.tick_params(axis="x", pad=4, labelsize=tick_fs)
+    ax.tick_params(axis="y", labelsize=11.5)
+    ax.set_ylabel(ylabel, fontsize=13)
+    ax.set_title(title, pad=6, fontsize=14)
     ax.grid(axis="y", linestyle="--", alpha=0.35)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
@@ -651,7 +702,8 @@ def plot_metric_barplot(
         bracket_step = 0.20 * yspan * significance_bracket_step_scale
         bracket_base = ymax + bracket_padding
         max_bracket_top = ymax
-        tick_h = 0.04 * yspan
+        # Keep end-ticks visible even when the axis span is large.
+        tick_h = max(0.04 * yspan, 0.012 * max(abs(ymax - ymin), yspan, 0.05))
         for (model_a, model_b, label), level in zip(valid_pairs, levels):
             if level < 0:
                 continue
@@ -660,15 +712,16 @@ def plot_metric_barplot(
             ax.plot(
                 [x1, x1, x2, x2],
                 [y_bracket, y_bracket + tick_h, y_bracket + tick_h, y_bracket],
-                color="black", linewidth=1.0,
+                color="black", linewidth=1.15, clip_on=False, zorder=5,
             )
             ax.text(
-                (x1 + x2) / 2.0, y_bracket + tick_h + 0.015 * yspan,
-                label, ha="center", va="bottom", fontsize=13, fontweight="bold",
+                (x1 + x2) / 2.0, y_bracket + tick_h + 0.025 * yspan,
+                label, ha="center", va="bottom", fontsize=14.5, fontweight="bold",
+                clip_on=False, zorder=6,
             )
-            max_bracket_top = max(max_bracket_top, y_bracket + tick_h + 0.08 * yspan)
+            max_bracket_top = max(max_bracket_top, y_bracket + tick_h + 0.18 * yspan)
         if valid_pairs:
-            ax.set_ylim(bottom=min(ymin - 0.05 * yspan, ax.get_ylim()[0]), top=max_bracket_top + 0.08 * yspan)
+            ax.set_ylim(bottom=min(ymin - 0.05 * yspan, ax.get_ylim()[0]), top=max_bracket_top + 0.28 * yspan)
 
     if own_fig:
         finalize_figure_layout(fig, rect=(0.0, 0.16, 1.0, 1.0))
@@ -730,58 +783,49 @@ def significance_pairs_for_plot(
     significance_for_manuscript: bool = False,
     bidirectional: bool = False,
 ) -> List[Tuple[str, str, str]]:
-    """Build (srl, control, star_label) triples for formal TAR-vs-control brackets.
+    """Build (srl, control, star_label) triples from Holm-adjusted Nadeau–Bengio results.
 
-    When ``bidirectional`` is True, statistically supported control-better comparisons are
-    annotated with ↓ and TAR-better with ↑ so direction is unambiguous. CSV p-values and
-    paired differences are never modified here.
+    BestSingleTree / oracle diagnostics are never starred. Wilcoxon/permutation columns
+    are ignored for the plotted label.
     """
+    del bidirectional  # direction retained in CSV; plotted label is the Holm star string
     pairs: List[Tuple[str, str, str]] = []
     if pairwise_df.empty or not significance_for_manuscript:
         return pairs
-    control_better_tiers = {
-        "control_better",
-        "formal_control_better",
-        "exploratory_control_better",
-    }
+    try:
+        from tree_srl_benchmark import ORACLE_DIAGNOSTIC_CONTROLS
+    except ImportError:
+        ORACLE_DIAGNOSTIC_CONTROLS = {BEST_SINGLE_TREE}
     sub = pairwise_df[(pairwise_df["metric"] == metric) & (pairwise_df["srl_model"] == srl_model)]
     for control_model in control_models:
+        if normalize_model_name(control_model) in ORACLE_DIAGNOSTIC_CONTROLS:
+            continue
         row = sub[sub["control_model"] == control_model]
         if row.empty:
             continue
         row0 = row.iloc[0]
-        if bool(row0.get("exploratory", False)):
+        if bool(row0.get("is_oracle_diagnostic", False)):
             continue
-        label = str(row0["significance_label"])
-        tier = str(row0.get("significance_tier", ""))
-        comparison = str(row0.get("comparison_result", ""))
-        is_control_better = tier in control_better_tiers or comparison in {
-            "control_better",
-            "exploratory_control_better",
-        }
-        if label in {"ns", "na", "nan", ""}:
-            if not (bidirectional and is_control_better):
+        if "is_formal_comparison" in row0.index and not bool(row0.get("is_formal_comparison", False)):
+            continue
+        if bool(row0.get("exploratory", False)) and str(row0.get("significance_tier", "")) not in {
+            "formal",
+            "formal_control_better",
+        }:
+            # Keep exploratory runs unstarred on manuscript figures.
+            if int(row0.get("n_repeats", 0)) < 10:
                 continue
-            from tree_srl_benchmark import significance_label
-
-            p_candidates = [
-                float(p)
-                for p in (row0.get("permutation_p"), row0.get("wilcoxon_p"))
-                if pd.notna(p) and np.isfinite(float(p))
-            ]
-            if p_candidates:
-                label = significance_label(min(p_candidates))
-            ci_high = float(row0.get("CI_high", np.nan))
-            if label == "ns" and np.isfinite(ci_high) and ci_high < 0.0:
-                label = "*"
+        label = str(row0.get("significance_label", "ns"))
         if label in {"ns", "na", "nan", ""}:
             continue
-        if not bidirectional and is_control_better:
-            continue
-        if bidirectional:
-            # Unambiguous direction markers; omit all stars rather than show ambiguous ****.
-            label = f"{label}↓" if is_control_better else f"{label}↑"
-        pairs.append((srl_model, control_model, label))
+        # Prefer explicit Holm column when present (guards against stale CSV labels).
+        if "corrected_p_holm" in row0.index and pd.notna(row0["corrected_p_holm"]):
+            from tree_srl_benchmark import significance_label as _sig
+
+            label = _sig(float(row0["corrected_p_holm"]))
+            if label in {"ns", "na", "nan", ""}:
+                continue
+        pairs.append((srl_model, str(row0["control_model"]), label))
     return pairs
 
 
@@ -840,13 +884,11 @@ def plot_target_weight_heatmap(weights_df: pd.DataFrame, outpath: str, stacker_t
         .mean()
         .pivot(index="target", columns="expert", values="weight")
     )
-    # Manuscript x-tick labels use the full expert identifiers (not abbreviated aliases).
+    # Full expert identifiers on the axes (same IDs as CSV / manifest).
     display_experts = [str(c) for c in pivot.columns]
     n_experts = max(pivot.shape[1], 1)
-    # Extra width keeps column spacing readable; extra height reserves room for vertical labels
-    # without shrinking the heatmap panel itself.
-    fig_w = max(13.5, 0.78 * n_experts)
-    fig_h = 6.6
+    fig_w = max(15.0, 0.85 * n_experts)
+    fig_h = 7.6
     fig, ax = plt.subplots(figsize=(fig_w, fig_h))
     if ridge_like:
         im = ax.imshow(pivot.values, aspect="auto", **diverging_heatmap_kwargs(pivot.values))
@@ -860,24 +902,25 @@ def plot_target_weight_heatmap(weights_df: pd.DataFrame, outpath: str, stacker_t
             "expected ridge or convex/non-negative."
         )
     cbar = fig.colorbar(im, ax=ax, fraction=0.035, pad=0.02)
-    cbar.set_label(cbar_label, fontsize=12)
-    cbar.ax.tick_params(labelsize=11)
+    cbar.set_label(cbar_label, fontsize=13.5)
+    cbar.ax.tick_params(labelsize=13)
     ax.set_xticks(range(pivot.shape[1]))
     ax.set_xticklabels(
         display_experts,
         rotation=90,
         ha="center",
         va="top",
-        fontsize=11,
+        fontsize=12.5,
     )
-    ax.tick_params(axis="x", pad=6, length=4)
+    ax.tick_params(axis="x", pad=8, length=4)
     ax.set_yticks(range(pivot.shape[0]))
-    ax.set_yticklabels(pivot.index, fontsize=11.5)
-    ax.set_xlabel("Expert", fontsize=12, labelpad=10)
-    ax.set_ylabel("Target", fontsize=12)
-    ax.set_title("Target-wise stacking coefficients", fontsize=14, pad=8)
-    # Leave a fixed bottom band for vertical expert names; keep the heatmap axes box intact.
-    fig.subplots_adjust(left=0.08, right=0.92, top=0.90, bottom=0.34)
+    ax.set_yticklabels(pivot.index, fontsize=13.5)
+    ax.set_xlabel("Expert", fontsize=14, labelpad=12)
+    ax.set_ylabel("Target", fontsize=14)
+    ax.set_title("Target-wise stacking coefficients", fontsize=16, pad=10)
+    # Fixed bottom band for vertical full expert IDs; keep heatmap axes box intact.
+    fig.subplots_adjust(left=0.07, right=0.93, top=0.90, bottom=0.42)
+    assert_figure_artists_inside_canvas(fig, context="target_weight_heatmap")
     save_figure(fig, outpath)
     plt.close(fig)
 
@@ -959,14 +1002,14 @@ def plot_ode_back_r2_barplot(
     outpath: str,
     *,
     model_order: Optional[List[str]] = None,
-    title: str = "ODE-back functional outcome $R^2$ (100 repeats, mean $\\pm$ 95% CI)",
+    title: str = "ODE-back functional outcome R square\n(100 repeats, mean ± 95% CI)",
     significance_pairs: Optional[List[Tuple[str, str, str]]] = None,
     n_repeats: int = 0,
     metric_col: str = ODE_BACK_BAR_METRIC,
-    ylabel: str = "Mean functional outcome $R^2$",
+    ylabel: str = "Mean functional outcome\nR square",
 ) -> None:
-    """Bar plot of repeat-averaged ODE-back R² with 95% CI (no significance brackets)."""
-    del significance_pairs, n_repeats  # retained for API; brackets omitted for publication figures
+    """Bar plot of repeat-averaged ODE-back R² with 95% CI and formal significance brackets."""
+    del n_repeats  # reserved for callers/manifests
     order = model_order or list(ODE_BACK_BAR_MODEL_ORDER)
     plot_df = _normalize_ode_back_summary_df(summary_df, metric_col=metric_col)
     plot_df = plot_df[plot_df["model"].isin(order)].copy()
@@ -975,7 +1018,18 @@ def plot_ode_back_r2_barplot(
     ci_low_col = f"{metric_col}_ci_low"
     ci_high_col = f"{metric_col}_ci_high"
     apply_matplotlib_style()
-    fig, ax = plt.subplots(figsize=(max(7.2, 0.68 * len(plot_df)), 5.4))
+    model_to_x_pre = {m: i for i, m in enumerate([m for m in order if m in set(plot_df["model"])])}
+    valid_pairs_pre = [
+        (a, b, lbl)
+        for a, b, lbl in (significance_pairs or [])
+        if lbl not in {"ns", "na", "nan", ""} and a in model_to_x_pre and b in model_to_x_pre
+    ]
+    levels_pre = _assign_significance_bracket_levels(valid_pairs_pre, model_to_x_pre)
+    max_bracket_level = max((level for level in levels_pre if level >= 0), default=-1)
+    # Match model_compare_r2 typography: title/ylabel/xticks ~2× with room for stars.
+    title_fs, ylabel_fs, tick_fs = 28, 26, 23
+    fig_height = 10.6 + 1.45 * max(max_bracket_level + 1, 0)
+    fig, ax = plt.subplots(figsize=(max(11.0, 2.2 * max(len(plot_df), 1)), fig_height))
     plot_metric_barplot(
         plot_df,
         outpath,
@@ -984,17 +1038,25 @@ def plot_ode_back_r2_barplot(
         title=title,
         model_order=order,
         pin_first=[TAR_MODEL],
-        significance_pairs=None,
+        significance_pairs=significance_pairs,
         ax=ax,
+        significance_bracket_step_scale=1.85,
     )
-    ax.set_title(title, fontsize=12.5, pad=4)
-    ax.set_ylabel(ylabel, fontsize=12)
-    ax.tick_params(axis="x", labelsize=10)
-    ax.tick_params(axis="y", labelsize=10.5)
+    ax.set_title(title, fontsize=title_fs, pad=22)
+    ax.set_ylabel(ylabel, fontsize=ylabel_fs, labelpad=14)
+    ax.tick_params(axis="x", labelsize=tick_fs, pad=6)
+    ax.tick_params(axis="y", labelsize=12.5, pad=4)
     for label in ax.get_xticklabels():
-        label.set_rotation(28)
+        label.set_rotation(45)
         label.set_ha("right")
-        label.set_fontsize(10)
+        label.set_fontsize(tick_fs)
+    for text in ax.texts:
+        if text.get_fontweight() == "bold":
+            # Keep stars fully visible above brackets (not clipped by axes/title).
+            text.set_fontsize(18)
+            text.set_clip_on(False)
+            text.set_zorder(6)
+    # Focus y-limits on the R² band (not 0–1), with enough headroom for **** glyphs.
     if {ci_low_col, ci_high_col}.issubset(plot_df.columns):
         lo = float(np.nanmin(plot_df[ci_low_col].to_numpy(dtype=float)))
         hi = float(np.nanmax(plot_df[ci_high_col].to_numpy(dtype=float)))
@@ -1004,10 +1066,17 @@ def plot_ode_back_r2_barplot(
             hi = max(hi, float(np.nanmax(yvals))) if np.isfinite(hi) else float(np.nanmax(yvals))
         if np.isfinite(lo) and np.isfinite(hi) and hi > lo:
             yspan = max(hi - lo, 0.005)
-            cur_lo, cur_hi = ax.get_ylim()
-            ax.set_ylim(lo - 0.25 * yspan, max(cur_hi, hi + 0.35 * yspan))
-    finalize_figure_layout(fig, rect=(0.0, 0.14, 1.0, 1.0))
-    save_figure(fig, outpath)
+            star_ys = [
+                float(t.get_position()[1])
+                for t in ax.texts
+                if t.get_fontweight() == "bold" and np.isfinite(t.get_position()[1])
+            ]
+            top_need = max([hi] + star_ys)
+            ax.set_ylim(lo - 0.30 * yspan, top_need + 0.55 * yspan)
+    # Leave a larger title band above the axes so stars are not squeezed.
+    finalize_figure_layout(fig, rect=(0.18, 0.14, 0.98, 0.84))
+    assert_figure_artists_inside_canvas(fig, context="ode_back_r2_barplot")
+    save_figure(fig, outpath, dpi=600)
     plt.close(fig)
 
 
@@ -1142,45 +1211,91 @@ def plot_model_metric_combined_panel(
     heatmap_cbar_label: str,
     model_order: List[str],
     significance_pairs: Optional[List[Tuple[str, str, str]]] = None,
+    rmse_significance_pairs: Optional[List[Tuple[str, str, str]]] = None,
 ) -> None:
-    """Left: aggregate bar (mean ± 95% CI); right: per-target heatmap.
+    """Manuscript model_compare panel: stacked mean R² (top) and RMSE (bottom) bars.
 
-    Significance brackets are omitted for publication readability; pairwise CSVs remain exploratory.
+    ``per_target_df`` / heatmap arguments are retained for API compatibility but are not
+    rendered here; use ``plot_prediction_error_heatmap`` / per-target heatmap helpers for
+    diagnostic heatmaps.
     """
-    del significance_pairs  # retained for API compatibility; not rendered
+    del per_target_df, heatmap_value_col, heatmap_cbar_label
     apply_matplotlib_style()
-    fig, axes = plt.subplots(
-        1, 2, figsize=(14.0, 6.4), gridspec_kw={"width_ratios": [1.05, 1.15]}, constrained_layout=True,
-    )
+    r2_col = summary_metric_col if summary_metric_col in summary_df.columns else "mean_R2_original"
+    rmse_col = "mean_RMSE_original"
+    if r2_col not in summary_df.columns or rmse_col not in summary_df.columns:
+        raise ValueError(
+            "plot_model_metric_combined_panel requires mean_R2_original and mean_RMSE_original "
+            f"in summary_df; present={list(summary_df.columns)}"
+        )
+    plot_df = summary_df[summary_df["model"].isin(model_order)].copy()
+    plot_df = _reorder_bar_plot_df(plot_df, model_order)
+
+    def _pair_levels(pairs: Optional[List[Tuple[str, str, str]]]) -> int:
+        model_to_x = {m: i for i, m in enumerate(plot_df["model"].tolist())}
+        valid = [
+            (a, b, lbl)
+            for a, b, lbl in (pairs or [])
+            if lbl not in {"ns", "na", "nan", ""} and a in model_to_x and b in model_to_x
+        ]
+        levels = _assign_significance_bracket_levels(valid, model_to_x)
+        return max((level for level in levels if level >= 0), default=-1)
+
+    top_levels = _pair_levels(significance_pairs)
+    bot_levels = _pair_levels(rmse_significance_pairs)
+    # Extra height/left room: large titles + wrapped y-labels must clear stars and tick numbers.
+    fig_h = 11.0 + 1.0 * (max(top_levels, 0) + max(bot_levels, 0) + 2)
+    fig, axes = plt.subplots(2, 1, figsize=(9.2, fig_h), sharex=True)
+
+    r2_title = "Mean target-wise R square"
+    r2_ylabel = "Mean target-wise R square\n(original scale)"
+    rmse_title = "Mean target-wise RMSE"
+    rmse_ylabel = "Mean target-wise RMSE\n(original scale)"
+    title_fs, ylabel_fs, tick_fs = 28, 26, 23
+
     plot_metric_barplot(
-        summary_df[summary_df["model"].isin(model_order)],
+        plot_df,
         outpath,
-        metric_col=summary_metric_col,
-        ylabel=summary_ylabel,
-        title=summary_title,
+        metric_col=r2_col,
+        ylabel=r2_ylabel,
+        title=r2_title,
         model_order=model_order,
-        significance_pairs=None,
+        significance_pairs=significance_pairs,
         ax=axes[0],
+        significance_bracket_step_scale=1.55,
     )
-    plot_per_target_metric_heatmap(
-        per_target_df,
+    axes[0].set_title(r2_title, fontsize=title_fs, pad=18)
+    axes[0].set_ylabel(r2_ylabel, fontsize=ylabel_fs, labelpad=14)
+    for text in axes[0].texts:
+        if text.get_fontweight() == "bold":
+            text.set_fontsize(16)
+
+    plot_metric_barplot(
+        plot_df,
         outpath,
-        model_order,
-        heatmap_value_col,
-        heatmap_cbar_label,
+        metric_col=rmse_col,
+        ylabel=rmse_ylabel,
+        title=rmse_title,
+        model_order=model_order,
+        significance_pairs=rmse_significance_pairs,
         ax=axes[1],
+        significance_bracket_step_scale=1.55,
     )
-    axes[0].set_title(summary_title, fontsize=13, pad=4)
-    axes[0].set_ylabel(summary_ylabel, fontsize=12)
-    axes[0].tick_params(axis="x", labelsize=10)
-    axes[0].tick_params(axis="y", labelsize=10.5)
-    for label in axes[0].get_xticklabels():
-        label.set_rotation(28)
-        label.set_ha("right")
-        label.set_fontsize(10)
-    axes[1].set_title(f"Per-target {heatmap_cbar_label}", fontsize=13, pad=4)
-    axes[1].tick_params(axis="both", labelsize=10.5)
-    save_figure(fig, outpath)
+    axes[1].set_title(rmse_title, fontsize=title_fs, pad=18)
+    axes[1].set_ylabel(rmse_ylabel, fontsize=ylabel_fs, labelpad=14)
+    for text in axes[1].texts:
+        if text.get_fontweight() == "bold":
+            text.set_fontsize(16)
+    for ax in axes:
+        ax.tick_params(axis="x", labelsize=tick_fs, pad=6)
+        ax.tick_params(axis="y", labelsize=12.5, pad=4)
+        for label in ax.get_xticklabels():
+            label.set_rotation(45)
+            label.set_ha("right")
+            label.set_fontsize(tick_fs)
+    finalize_figure_layout(fig, rect=(0.16, 0.10, 0.98, 0.94), h_pad=3.2)
+    assert_figure_artists_inside_canvas(fig, context="model_compare_r2")
+    save_figure(fig, outpath, dpi=600)
     plt.close(fig)
 
 
@@ -1660,23 +1775,41 @@ def plot_representative_ode_trajectory(
     C = history_df["C_ug_per_mL"].to_numpy(dtype=float)
     P_total = history_df["P_total_CFU_per_mL"].to_numpy(dtype=float)
 
-    fig, axes = plt.subplots(3, 1, figsize=(10, 8), sharex=True)
+    title_fs, label_fs, tick_fs, legend_fs = 16, 14, 12.5, 12.5
+    fig, axes = plt.subplots(3, 1, figsize=(11.5, 9.2), sharex=True)
     axes[0].plot(times, C, color=TRAJECTORY_AMP, linewidth=1.8)
-    axes[0].set_ylabel(r"AMP ($\mu$g mL$^{-1}$)", labelpad=10)
-    axes[0].set_title(f"AMP concentration ({total_dosage:.1f} µg/mL total)", fontsize=FS_TRAJECTORY_TITLE)
+    axes[0].set_ylabel(r"AMP" + "\n" + r"($\mu$g mL$^{-1}$)", fontsize=label_fs, labelpad=10)
+    axes[0].set_title(
+        f"AMP concentration ({total_dosage:.1f} µg/mL total)",
+        fontsize=title_fs,
+        pad=8,
+    )
+    axes[0].tick_params(axis="both", labelsize=tick_fs)
 
     axes[1].plot(times, P_total / 1e6, color=TRAJECTORY_PROBIOTIC, linewidth=1.8)
-    axes[1].set_ylabel(r"Probiotic ($\times 10^6$ CFU mL$^{-1}$)", labelpad=10)
+    axes[1].set_ylabel(
+        r"Probiotic" + "\n" + r"($\times 10^6$ CFU mL$^{-1}$)",
+        fontsize=label_fs,
+        labelpad=10,
+    )
     axes[1].set_title(
         "Probiotic (total, S/R)" if probiotic_two_compartment else "Probiotic",
-        fontsize=FS_TRAJECTORY_TITLE,
+        fontsize=title_fs,
+        pad=8,
     )
+    axes[1].tick_params(axis="both", labelsize=tick_fs)
 
     pathogen_colors = TRAJECTORY_PATHOGENS[:N_ODE_STRAINS]
     for i in range(N_ODE_STRAINS):
         color_i = pathogen_colors[i]
         b_col = f"B_total_{i + 1}_CFU_per_mL"
-        axes[2].plot(times, history_df[b_col].to_numpy(dtype=float) / 1e6, color=color_i, linewidth=1.8, label=f"B{i + 1}")
+        axes[2].plot(
+            times,
+            history_df[b_col].to_numpy(dtype=float) / 1e6,
+            color=color_i,
+            linewidth=1.8,
+            label=f"B{i + 1}",
+        )
         axes[2].hlines(
             t_thr[i] / 1e6,
             times[0],
@@ -1687,11 +1820,21 @@ def plot_representative_ode_trajectory(
             alpha=0.55,
             label="_nolegend_",
         )
-    axes[2].set_xlabel("Time (h)")
-    axes[2].set_ylabel(r"Pathogen strain ($\times 10^6$ CFU mL$^{-1}$)", labelpad=10)
-    axes[2].set_title("Pathogens", fontsize=FS_TRAJECTORY_TITLE)
-    axes[2].legend(ncol=5, fontsize=FS_LEGEND, frameon=False, loc="upper right")
-    finalize_figure_layout(fig, h_pad=2.4)
+    axes[2].set_xlabel("Time (h)", fontsize=label_fs, labelpad=6)
+    axes[2].set_ylabel(
+        r"Pathogen strain" + "\n" + r"($\times 10^6$ CFU mL$^{-1}$)",
+        fontsize=label_fs,
+        labelpad=10,
+    )
+    axes[2].set_title("Pathogens", fontsize=title_fs, pad=8)
+    axes[2].tick_params(axis="both", labelsize=tick_fs)
+    axes[2].legend(ncol=5, fontsize=legend_fs, frameon=False, loc="upper right")
+    for ax in axes:
+        ax.set_xlim(float(times[0]), float(times[-1]))
+    for ax in axes[:2]:
+        plt.setp(ax.get_xticklabels(), visible=False)
+    finalize_figure_layout(fig, h_pad=3.8, pad=2.2, rect=(0.14, 0.06, 0.985, 0.94))
+    assert_figure_artists_inside_canvas(fig, context="representative_paper_figure")
     save_figure(fig, outpath)
     plt.close(fig)
 
@@ -1730,21 +1873,32 @@ def plot_fixed_umax_representative(
     order = [m for m in FIG4_FIXED_UMAX_MODELS if m in model_labels or m in trajectories_df["model"].unique()]
     model_labels = order[:3]
     alias = {
-        "BestTree": "Best tree",
-        "BestSingleTree": "Best tree",
-        "UniformTreeMean": "Uniform mean",
+        "TAR": "TAR",
+        "BestTree": "BestTree",
+        "BestSingleTree": "BestTree",
+        "Best tree (oracle)": "BestTree",
+        "UniformTreeMean": "UniformTreeMean",
+        "Uniform mean": "UniformTreeMean",
         "RandomForest": "RF",
+        "RF": "RF",
     }
+    # Short display-only labels; model IDs in CSV/manifest stay unchanged.
+    # Caller-provided display_labels are mapped through alias / model_display_label.
     if display_labels is None:
-        display_labels = [model_display_label(m) for m in model_labels]
+        resolved_labels = [model_display_label(m) for m in model_labels]
     else:
-        display_labels = [
+        resolved_labels = [
             alias.get(str(lbl), model_display_label(str(lbl)))
             for lbl in list(display_labels)[: len(model_labels)]
         ]
+        while len(resolved_labels) < len(model_labels):
+            resolved_labels.append(model_display_label(model_labels[len(resolved_labels)]))
+    display_labels = [alias.get(str(lbl), str(lbl)) for lbl in resolved_labels]
     apply_matplotlib_style()
     n_cols = min(3, len(model_labels))
-    fig, axes = plt.subplots(3, n_cols, figsize=(5.5 * n_cols, 8.2), sharex="col")
+    # Column titles / Time (h) moderately enlarged; y-labels keep unit on second line.
+    title_fs, xlabel_fs, label_fs, tick_fs, legend_fs = 22, 20, 14, 13, 13
+    fig, axes = plt.subplots(3, n_cols, figsize=(17.5, 11.4), sharex="col")
     if n_cols == 1:
         axes = np.array(axes).reshape(3, 1)
     pathogen_colors = TRAJECTORY_PATHOGENS[:N_ODE_STRAINS]
@@ -1759,18 +1913,33 @@ def plot_fixed_umax_representative(
         C = sub["C_ug_per_mL"].to_numpy(dtype=float)
         P_total = sub["P_total_CFU_per_mL"].to_numpy(dtype=float)
         t_thr = np.asarray(t_thr_by_model[model_name], dtype=float)
-        title = display_labels[col] if col < len(display_labels) else _closed_loop_display_label(model_name)
+        title = display_labels[col] if col < len(display_labels) else model_display_label(model_name)
+        title = alias.get(str(title), str(title))
 
         axes[0, col].plot(times, C, linewidth=1.8, color=TRAJECTORY_AMP)
-        axes[0, col].set_title(title, fontsize=12, pad=8)
-        axes[0, col].tick_params(axis="both", labelsize=9.75)
+        axes[0, col].set_title(title, fontsize=title_fs, pad=12)
+        axes[0, col].tick_params(axis="both", labelsize=tick_fs)
         if col == 0:
-            axes[0, col].set_ylabel(r"AMP ($\mu$g mL$^{-1}$)", fontsize=10, labelpad=10)
+            axes[0, col].set_ylabel(
+                r"AMP" + "\n" + r"($\mu$g mL$^{-1}$)",
+                fontsize=label_fs,
+                labelpad=12,
+            )
+        else:
+            axes[0, col].set_ylabel("")
+            axes[0, col].tick_params(axis="y", labelleft=False)
 
         axes[1, col].plot(times, P_total / 1e6, linewidth=1.8, color=TRAJECTORY_PROBIOTIC)
-        axes[1, col].tick_params(axis="both", labelsize=9.75)
+        axes[1, col].tick_params(axis="both", labelsize=tick_fs)
         if col == 0:
-            axes[1, col].set_ylabel(r"Probiotic ($\times10^6$ CFU mL$^{-1}$)", fontsize=10, labelpad=10)
+            axes[1, col].set_ylabel(
+                r"Probiotic" + "\n" + r"($\times10^6$ CFU mL$^{-1}$)",
+                fontsize=label_fs,
+                labelpad=12,
+            )
+        else:
+            axes[1, col].set_ylabel("")
+            axes[1, col].tick_params(axis="y", labelleft=False)
 
         for i in range(N_ODE_STRAINS):
             color_i = pathogen_colors[i]
@@ -1785,11 +1954,20 @@ def plot_fixed_umax_representative(
             axes[2, col].hlines(
                 t_thr[i] / 1e6, times[0], times[-1], colors=color_i, linestyles="dashed", linewidth=0.9, alpha=0.45
             )
-        axes[2, col].set_xlabel("Time (h)", fontsize=10)
-        axes[2, col].tick_params(axis="both", labelsize=9.75)
+        axes[2, col].set_xlabel("Time (h)", fontsize=xlabel_fs, labelpad=10)
+        axes[2, col].tick_params(axis="both", labelsize=tick_fs)
         if col == 0:
-            axes[2, col].set_ylabel(r"Pathogen strain ($\times10^6$ CFU mL$^{-1}$)", fontsize=10, labelpad=10)
+            axes[2, col].set_ylabel(
+                r"Pathogen strain" + "\n" + r"($\times10^6$ CFU mL$^{-1}$)",
+                fontsize=label_fs,
+                labelpad=12,
+            )
             legend_handles, legend_labels = axes[2, col].get_legend_handles_labels()
+        else:
+            axes[2, col].set_ylabel("")
+            axes[2, col].tick_params(axis="y", labelleft=False)
+        for row in range(3):
+            axes[row, col].set_xlim(float(times[0]), float(times[-1]))
 
     for row in range(3):
         ylims = [axes[row, c].get_ylim() for c in range(n_cols)]
@@ -1802,12 +1980,14 @@ def plot_fixed_umax_representative(
             legend_handles,
             legend_labels,
             ncol=5,
-            fontsize=10.5,
+            fontsize=legend_fs,
             frameon=False,
-            loc="upper center",
-            bbox_to_anchor=(0.5, 0.02),
+            loc="lower center",
+            bbox_to_anchor=(0.5, 0.0),
         )
-    finalize_figure_layout(fig, rect=(0.0, 0.08, 1.0, 0.98), h_pad=2.0, w_pad=1.4)
+    # Reserve bottom/top margins for enlarged Time (h) and column titles.
+    finalize_figure_layout(fig, rect=(0.08, 0.12, 0.99, 0.92), h_pad=3.8, w_pad=1.8)
+    assert_figure_artists_inside_canvas(fig, context="fixed_umax_representative")
     save_figure(fig, outpath)
     plt.close(fig)
 
@@ -1984,12 +2164,15 @@ def closed_loop_significance_pairs_from_repeats(
                 wilcoxon_p = float(wilcoxon(diff).pvalue) if not np.allclose(diff, 0.0) else 1.0
             except Exception:
                 wilcoxon_p = float("nan")
+            from tree_srl_benchmark import stable_stat_seed
+
             perm_p = permutation_test_mean_diff(
                 diff,
                 permutation_replicates,
-                seed=abs(hash(metric + control)) % 10000,
+                seed=stable_stat_seed(0, metric, control),
             )
-            p_for_label = float(min(p for p in (wilcoxon_p, perm_p) if np.isfinite(p)))
+            # Do not use min(Wilcoxon, permutation) for plotted stars.
+            p_for_label = float("nan")
             star_label, significance_tier = evaluate_significance_label(
                 p_for_label,
                 ci_low,
@@ -3485,7 +3668,9 @@ def plot_umax_ode_ablation(
         )
     apply_matplotlib_style()
     n_cols = len(order)
-    fig, axes = plt.subplots(3, n_cols, figsize=(5.5 * n_cols, 8.4), sharex=True)
+    # Match fixed_umax_representative typography (titles / Time / y-labels).
+    title_fs, xlabel_fs, label_fs, tick_fs, legend_fs = 22, 20, 14, 13, 13
+    fig, axes = plt.subplots(3, n_cols, figsize=(17.5, 11.4), sharex=True)
     if n_cols == 1:
         axes = np.array(axes).reshape(3, 1)
     pathogen_colors = TRAJECTORY_PATHOGENS[:N_ODE_STRAINS]
@@ -3506,24 +3691,41 @@ def plot_umax_ode_ablation(
         if display_labels is not None and col < len(display_labels):
             title = display_labels[col]
         else:
-            policy_label = FIG5_ODE_POLICY_SHORT_LABELS.get(condition, _umax_ablation_display_label(condition))
-            title_parts = [policy_label]
+            policy_label = FIG5_ODE_POLICY_SHORT_LABELS.get(
+                condition, _umax_ablation_display_label(condition)
+            )
+            metric_bits: List[str] = []
             umax_val = (policy_umax_by_condition or {}).get(condition)
             dose_val = (total_dosage_by_condition or {}).get(condition)
             if umax_val is not None and np.isfinite(umax_val):
-                title_parts.append(f"$U_{{max}}$={umax_val:.1f}")
+                metric_bits.append(f"$U_{{max}}$={umax_val:.1f}")
             if dose_val is not None and np.isfinite(dose_val):
-                title_parts.append(f"dosage={dose_val:.0f}")
-            title = "\n".join(title_parts)
+                metric_bits.append(f"dosage={dose_val:.0f}")
+            # At most two title lines: policy; optional Umax/dosage on the second line.
+            title = policy_label if not metric_bits else f"{policy_label}\n" + "; ".join(metric_bits)
         axes[0, col].plot(times, sub["C_ug_per_mL"], linewidth=1.8, color=TRAJECTORY_AMP)
-        axes[0, col].set_title(title, fontsize=11.5, pad=8)
-        axes[0, col].tick_params(axis="both", labelsize=9.75)
+        axes[0, col].set_title(title, fontsize=title_fs, pad=12)
+        axes[0, col].tick_params(axis="both", labelsize=tick_fs)
         if col == 0:
-            axes[0, col].set_ylabel(r"AMP ($\mu$g/mL)", fontsize=10)
+            axes[0, col].set_ylabel(
+                r"AMP" + "\n" + r"($\mu$g/mL)",
+                fontsize=label_fs,
+                labelpad=12,
+            )
+        else:
+            axes[0, col].set_ylabel("")
+            axes[0, col].tick_params(axis="y", labelleft=False)
         axes[1, col].plot(times, sub["P_total_CFU_per_mL"] / 1e6, linewidth=1.8, color=TRAJECTORY_PROBIOTIC)
-        axes[1, col].tick_params(axis="both", labelsize=9.75)
+        axes[1, col].tick_params(axis="both", labelsize=tick_fs)
         if col == 0:
-            axes[1, col].set_ylabel(r"Probiotic ($\times10^6$ CFU/mL)", fontsize=10)
+            axes[1, col].set_ylabel(
+                r"Probiotic" + "\n" + r"($\times10^6$ CFU/mL)",
+                fontsize=label_fs,
+                labelpad=12,
+            )
+        else:
+            axes[1, col].set_ylabel("")
+            axes[1, col].tick_params(axis="y", labelleft=False)
         for i in range(N_ODE_STRAINS):
             color_i = pathogen_colors[i]
             b_col = f"B_total_{i + 1}_CFU_per_mL"
@@ -3534,13 +3736,20 @@ def plot_umax_ode_ablation(
             axes[2, col].hlines(
                 t_thr[i] / 1e6, times[0], times[-1], colors=color_i, linestyles="dashed", linewidth=0.9, alpha=0.45
             )
-        axes[2, col].set_xlabel("Time (h)", fontsize=10)
-        axes[2, col].tick_params(axis="both", labelsize=9.75)
+        axes[2, col].set_xlabel("Time (h)", fontsize=xlabel_fs, labelpad=10)
+        axes[2, col].tick_params(axis="both", labelsize=tick_fs)
         if col == 0:
-            axes[2, col].set_ylabel(r"Pathogen burden ($\times10^6$ CFU/mL)", fontsize=10)
+            axes[2, col].set_ylabel(
+                r"Pathogen burden" + "\n" + r"($\times10^6$ CFU/mL)",
+                fontsize=label_fs,
+                labelpad=12,
+            )
             legend_handles, legend_labels = axes[2, col].get_legend_handles_labels()
-    if legend_handles and legend_labels:
-        pass  # placed after shared y-limits below
+        else:
+            axes[2, col].set_ylabel("")
+            axes[2, col].tick_params(axis="y", labelleft=False)
+        for row in range(3):
+            axes[row, col].set_xlim(float(times[0]), float(times[-1]))
     if all_times:
         x_min = float(min(t[0] for t in all_times))
         x_max = float(max(t[-1] for t in all_times))
@@ -3554,16 +3763,24 @@ def plot_umax_ode_ablation(
         for c in range(n_cols):
             axes[row, c].set_ylim(ymin, ymax * 1.03)
     if legend_handles and legend_labels:
-        place_figure_legend_below(
-            fig, legend_handles, legend_labels, ncol=5, y=-0.01, bottom_rect=0.10, fontsize=10.5,
+        fig.legend(
+            legend_handles,
+            legend_labels,
+            ncol=5,
+            fontsize=legend_fs,
+            frameon=False,
+            loc="lower center",
+            bbox_to_anchor=(0.5, 0.0),
         )
+        finalize_figure_layout(fig, rect=(0.08, 0.12, 0.99, 0.92), h_pad=3.8, w_pad=1.8)
     else:
-        finalize_figure_layout(fig, rect=(0.0, 0.06, 1.0, 0.98))
+        finalize_figure_layout(fig, rect=(0.08, 0.06, 0.99, 0.92), h_pad=3.8, w_pad=1.8)
     fig.text(
-        0.99, 0.99, "representative case",
+        0.99, 0.985, "representative case",
         ha="right", va="top", fontsize=FS_NOTE, alpha=0.55, style="italic",
         transform=fig.transFigure,
     )
+    assert_figure_artists_inside_canvas(fig, context="umax_ode_ablation")
     save_figure(fig, outpath)
     plt.close(fig)
 
@@ -3640,12 +3857,16 @@ def plot_umax_summary_ablation(
         else None
     )
     n_panels = sum(1 for col, _ in metric_specs if col in plot_df.columns)
+    label_fs, tick_fs = 12.5, 11.5
     if horizontal_bars:
         n_bars = len(plot_df)
         # Keep bar thickness readable: short height for few conditions, avoid tall empty space.
         fig_h = max(2.6, 0.62 * n_bars + 1.15) if n_panels <= 1 else max(3.2, 1.15 * n_bars + 1.0)
         fig_w = 6.6 if n_panels <= 1 else 3.6 * max(n_panels, 1)
         fig, axes = plt.subplots(1, max(n_panels, 1), figsize=(fig_w, fig_h))
+    elif use_short_labels:
+        # Manuscript source size: compact width/height without empty excess margins.
+        fig, axes = plt.subplots(1, max(n_panels, 1), figsize=(15.5, 5.8))
     else:
         fig, axes = plt.subplots(1, max(n_panels, 1), figsize=(3.4 * max(n_panels, 1), 5.2))
     if n_panels == 1:
@@ -3670,29 +3891,32 @@ def plot_umax_summary_ablation(
             horizontal_bar_height=0.72 if horizontal_bars and n_panels <= 1 else 0.92,
         )
         if horizontal_bars:
-            ax.tick_params(axis="y", labelsize=10.5)
-            ax.tick_params(axis="x", labelsize=11)
+            ax.tick_params(axis="y", labelsize=tick_fs)
+            ax.tick_params(axis="x", labelsize=tick_fs)
             for tick in ax.get_yticklabels():
-                tick.set_fontsize(10.5)
-            ax.set_xlabel(ylabel, fontsize=11)
+                tick.set_fontsize(tick_fs)
+            ax.set_xlabel(ylabel, fontsize=label_fs)
         if not horizontal_bars:
             short_labels = [label_fn(m) for m in plot_df["model"]]
-            rotate = 28 if any(len(str(lbl)) > 10 for lbl in short_labels) else 0
+            ax.set_xticks(range(len(short_labels)))
             ax.set_xticklabels(
                 short_labels,
-                rotation=rotate,
-                ha="right" if rotate else "center",
-                fontsize=10.5,
+                rotation=0,
+                ha="center",
+                fontsize=tick_fs,
             )
-            ax.tick_params(axis="x", pad=5, labelsize=10.5)
-            ax.tick_params(axis="y", labelsize=10.5)
-            ax.set_ylabel(ylabel, fontsize=11)
+            ax.tick_params(axis="x", pad=4, labelsize=tick_fs)
+            ax.tick_params(axis="y", labelsize=tick_fs)
+            ax.set_ylabel(ylabel, fontsize=label_fs)
     for ax in axes[panel_idx:]:
         ax.set_visible(False)
     if horizontal_bars:
         finalize_figure_layout(fig, rect=(0.08, 0.08, 0.98, 0.98))
+    elif use_short_labels:
+        finalize_figure_layout(fig, rect=(0.04, 0.12, 0.99, 0.94), w_pad=1.6, h_pad=1.4)
     else:
         finalize_figure_layout(fig, rect=(0.0, 0.14, 1.0, 0.98))
+    assert_figure_artists_inside_canvas(fig, context="umax_summary_ablation")
     save_figure(fig, outpath)
     plt.close(fig)
 
@@ -4444,6 +4668,20 @@ def generate_ode_back_plots(outdir: str, config: Optional[dict] = None) -> Dict[
         n_repeats = int(pairwise_df["n_repeats"].max())
     main_controls = [m for m in model_order if m != TAR_MODEL]
     significance_for_manuscript = n_repeats >= 10
+    # Recompute formal pairwise CSV from saved repeat-level ODE-back metrics.
+    try:
+        from ode_back_validation import recompute_ode_back_pairwise_significance_from_saved
+        from tree_srl_benchmark import print_holm_caption_stats
+
+        pairwise_df = recompute_ode_back_pairwise_significance_from_saved(outdir, seed=42)
+    except Exception as exc:
+        print(f"[warn] could not recompute ode_back_pairwise_significance.csv ({exc}); using saved CSV")
+        pairwise_df = _read_optional_csv(outdir, ODE_BACK_PAIRWISE_CSV)
+    if not pairwise_df.empty:
+        if "srl_model" in pairwise_df.columns:
+            pairwise_df = pairwise_df.copy()
+            pairwise_df["srl_model"] = pairwise_df["srl_model"].map(normalize_model_name)
+            pairwise_df["control_model"] = pairwise_df["control_model"].map(normalize_model_name)
     sig_pairs = significance_pairs_for_plot(
         pairwise_df,
         TAR_MODEL,
@@ -4458,9 +4696,13 @@ def generate_ode_back_plots(outdir: str, config: Optional[dict] = None) -> Dict[
         summary_df,
         bar_path,
         model_order=model_order,
-        significance_pairs=None,  # brackets omitted; pairwise CSVs remain exploratory
+        significance_pairs=sig_pairs if sig_pairs else None,
         n_repeats=n_repeats,
     )
+    try:
+        print_holm_caption_stats(pairwise_df, title="ode_back_r2_barplot.png")
+    except Exception:
+        pass
     outputs["ode_back_r2_barplot.png"] = bar_path
 
     if ODE_BACK_TRAJECTORY_R2_METRIC in summary_df.columns:
@@ -4504,9 +4746,10 @@ def generate_ode_back_plots(outdir: str, config: Optional[dict] = None) -> Dict[
         ob_manifest["statistics_used"] = {
             **dict(ob_manifest.get("statistics_used") or {}),
             "ode_back_r2_barplot.png": (
-                "repeated ODE-back functional R2 with 95% CI error bars; "
-                "significance brackets omitted in the publication figure; "
-                "pairwise CSV p-values/diffs retained as exploratory diagnostics"
+                "repeated ODE-back functional R2 with 95% CI; formal stars from "
+                "Nadeau–Bengio corrected resampled t-tests + Holm-adjusted p "
+                "(Wilcoxon/permutation retained as sensitivity only); "
+                "BestSingleTree shown as Best tree (oracle) without formal TAR stars"
             ),
         }
         ob_manifest["manuscript_source_mapping"] = {
@@ -4584,7 +4827,21 @@ def generate_benchmark_plots(outdir: str, config: Optional[dict] = None) -> Dict
         per_target_df = per_target_df.copy()
         per_target_df["model"] = per_target_df["model"].map(normalize_model_name)
     weights_df = _read_optional_csv(outdir, "target_weight_table.csv")
-    pairwise_df = _read_optional_csv(outdir, "parameter_pairwise_significance.csv")
+    # Recompute formal pairwise CSV from saved repeat-level metrics + split metadata.
+    seed = int(config.get("seed", manifest.get("run_config", {}).get("seed", 42)))
+    n_perm = int(config.get("permutation_replicates", 5000))
+    try:
+        from tree_srl_benchmark import (
+            print_holm_caption_stats,
+            recompute_parameter_pairwise_significance_from_saved,
+        )
+
+        pairwise_df = recompute_parameter_pairwise_significance_from_saved(
+            outdir, n_perm=n_perm, seed=seed
+        )
+    except Exception as exc:
+        print(f"[warn] could not recompute parameter_pairwise_significance.csv ({exc}); using saved CSV")
+        pairwise_df = _read_optional_csv(outdir, "parameter_pairwise_significance.csv")
     if not pairwise_df.empty and "srl_model" in pairwise_df.columns:
         pairwise_df = pairwise_df.copy()
         pairwise_df["srl_model"] = pairwise_df["srl_model"].map(normalize_model_name)
@@ -4619,13 +4876,21 @@ def generate_benchmark_plots(outdir: str, config: Optional[dict] = None) -> Dict
         per_target_df,
         main_path,
         summary_metric_col="mean_R2_original",
-        summary_ylabel="Mean target-wise $R^2$ (original scale)",
-        summary_title="Mean target-wise $R^2$",
+        summary_ylabel="Mean target-wise R square\n(original scale)",
+        summary_title="Mean target-wise R square",
         heatmap_value_col="R2_original",
         heatmap_cbar_label="$R^2$ (original scale)",
         model_order=main_models,
-        significance_pairs=None,  # brackets omitted; pairwise CSVs remain exploratory
+        significance_pairs=main_pairs if significance_for_manuscript else None,
+        rmse_significance_pairs=rmse_pairs if significance_for_manuscript else None,
     )
+    try:
+        print_holm_caption_stats(
+            pairwise_df[pairwise_df["metric"].isin(["mean_R2_original", "mean_RMSE_original"])],
+            title="model_compare_r2.png",
+        )
+    except Exception:
+        pass
     primary_outputs: Dict[str, str] = {}
     primary_outputs["model_compare_r2.png"] = main_path
     outputs["model_compare_r2.png"] = main_path
@@ -4637,18 +4902,7 @@ def generate_benchmark_plots(outdir: str, config: Optional[dict] = None) -> Dict
     supplementary_outputs: Dict[str, str] = {}
 
     pe_path = os.path.join(figure_dir, "prediction_error_heatmap.png")
-    plot_model_metric_combined_panel(
-        summary_df,
-        per_target_df,
-        pe_path,
-        summary_metric_col="mean_RMSE_original",
-        summary_ylabel="Mean target-wise RMSE (original scale)",
-        summary_title="Mean target-wise RMSE",
-        heatmap_value_col="RMSE_original",
-        heatmap_cbar_label="RMSE (original scale)",
-        model_order=main_models,
-        significance_pairs=rmse_pairs if significance_for_manuscript else None,
-    )
+    plot_prediction_error_heatmap(per_target_df, pe_path, main_models)
     # Diagnostic only — not a current manuscript composite panel.
     supplementary_outputs["prediction_error_heatmap.png"] = pe_path
     outputs["prediction_error_heatmap.png"] = pe_path
@@ -4857,10 +5111,14 @@ def generate_fig4_plots(outdir: str) -> Dict[str, str]:
         or cl_manifest.get("fig4_model_display_labels")
     )
     alias = {
-        "BestTree": "Best tree",
-        "BestSingleTree": "Best tree",
-        "UniformTreeMean": "Uniform mean",
+        "BestTree": "BestTree",
+        "BestSingleTree": "BestTree",
+        "Best tree (oracle)": "BestTree",
+        "UniformTreeMean": "UniformTreeMean",
+        "Uniform mean": "UniformTreeMean",
         "RandomForest": "RF",
+        "RF": "RF",
+        "TAR": "TAR",
     }
     if isinstance(raw_display, dict):
         display_labels = [

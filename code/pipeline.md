@@ -238,7 +238,8 @@ python .\figure_audit.py --mode generate_plots --groups ode --ode_outdir .\resul
 | `Bterminal` | median over final 12 h of `sum_i B_total,i(t)` |
 | `terminal_stress_response_fraction` | median over final 12 h of `sum(B_T)/sum(B_total)` |
 | `time_averaged_stress_response_fraction` | trapezoidal integral of `sum(B_T)/sum(B_total)` over the full horizon, divided by treatment duration |
-| `dose_count`, `cumulative_dosage`, `P_AUC` | closed-loop dose count, cumulative dosage, plasma AUC |
+| `dose_count`, `cumulative_dosage` | closed-loop dose count; cumulative dosage |
+| `P_AUC` | time-averaged carrying-capacity-normalized probiotic abundance, `(1/T) ∫ P(t)/K_P dt` |
 
 Near-invariant outputs (observed range abs tol `1e-8` or rel tol `1e-10`) stay in raw tables and `mu_morris_output_samples.csv`, but are excluded from relative normalization/ranking and plotted as gray **N/A**.
 

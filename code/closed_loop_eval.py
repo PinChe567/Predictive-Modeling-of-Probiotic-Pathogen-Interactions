@@ -3802,6 +3802,7 @@ def paired_bootstrap_ci(diff: np.ndarray, n_bootstrap: int, seed: int) -> Tuple[
 
 
 def permutation_test_mean_diff(diff: np.ndarray, n_perm: int, seed: int) -> float:
+    """Sign-flip permutation p-value (sensitivity only; never used for plotted stars)."""
     if len(diff) == 0:
         return np.nan
     rng = np.random.default_rng(seed)
@@ -3816,17 +3817,9 @@ def permutation_test_mean_diff(diff: np.ndarray, n_perm: int, seed: int) -> floa
 
 
 def significance_label(p_value: float) -> str:
-    if not np.isfinite(p_value):
-        return "na"
-    if p_value < 0.0001:
-        return "****"
-    if p_value < 0.001:
-        return "***"
-    if p_value < 0.01:
-        return "**"
-    if p_value < 0.05:
-        return "*"
-    return "ns"
+    from tree_srl_benchmark import significance_label as _sig
+
+    return _sig(p_value)
 
 
 def evaluate_significance_label(
@@ -3837,26 +3830,17 @@ def evaluate_significance_label(
     srl_better: bool,
     single_split_exploratory: bool = False,
 ) -> Tuple[str, str]:
-    if not srl_better:
-        return "ns", "control_better"
-    if single_split_exploratory:
-        return "ns", "single_split"
-    if n_repeats < 2:
-        return "ns", "ns"
-    stars = significance_label(p_value)
-    if (
-        stars == "ns"
-        and srl_better
-        and np.isfinite(ci_low)
-        and np.isfinite(ci_high)
-        and ci_low > 0.0
-    ):
-        stars = "*"
-    if stars == "ns":
-        return "ns", "ns"
-    if n_repeats < 10:
-        return stars, "exploratory"
-    return stars, "formal"
+    from tree_srl_benchmark import evaluate_significance_label as _eval
+
+    return _eval(
+        p_value,
+        ci_low,
+        ci_high,
+        n_repeats=n_repeats,
+        srl_better=srl_better,
+        single_split_exploratory=single_split_exploratory,
+        bidirectional=True,
+    )
 
 
 def comparison_result_label(
@@ -3865,13 +3849,9 @@ def comparison_result_label(
     srl_better: bool,
     n_repeats: int,
 ) -> str:
-    if significance_tier == "control_better":
-        return "control_better"
-    if star_label in {"*", "**", "***", "****"}:
-        if n_repeats < 10 or significance_tier == "exploratory":
-            return "exploratory_srl_better"
-        return "srl_better"
-    return "not_significant"
+    from tree_srl_benchmark import comparison_result_label as _cmp
+
+    return _cmp(star_label, significance_tier, srl_better, n_repeats)
 
 
 def build_pairwise_tests(
@@ -3906,11 +3886,18 @@ def build_pairwise_tests(
                 wilcoxon_stat, wilcoxon_p = wilcoxon(srl_vals, ctrl_vals, zero_method="wilcox")
             except ValueError:
                 wilcoxon_stat, wilcoxon_p = np.nan, np.nan
-            perm_p = permutation_test_mean_diff(diff, config.permutation_replicates, seed=repeat_id + 303)
+            from tree_srl_benchmark import stable_stat_seed
+
+            perm_p = permutation_test_mean_diff(
+                diff,
+                config.permutation_replicates,
+                seed=stable_stat_seed(repeat_id + 303, metric, control),
+            )
             direction = "lower_is_better" if "error" in metric or "score" in metric or "dosage" in metric else "higher_is_better"
             srl_better = mean_diff < 0 if direction == "lower_is_better" else mean_diff > 0
+            # Single-split case-level tests are sensitivity-only; never min() p-values for stars.
             star_label, significance_tier = evaluate_significance_label(
-                float(min(wilcoxon_p, perm_p)) if np.isfinite(wilcoxon_p) or np.isfinite(perm_p) else float("nan"),
+                float("nan"),
                 ci_low,
                 ci_high,
                 n_repeats=1,
@@ -3991,87 +3978,81 @@ def build_repeated_closed_loop_significance(
     control_models: Optional[Sequence[str]] = None,
     metrics: Optional[Sequence[str]] = None,
     annotation_metrics: Optional[Sequence[str]] = None,
+    split_df: Optional[pd.DataFrame] = None,
+    benchmark_outdir: Optional[str] = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    from tree_srl_benchmark import (
+        BEST_SINGLE_TREE,
+        FORMAL_SIGNIFICANCE_CONTROLS,
+        ORACLE_DIAGNOSTIC_CONTROLS,
+        build_paired_repeated_significance,
+        load_repeat_split_ratios,
+        normalize_model_name,
+    )
+
     long_df = pd.concat(repeat_summaries, ignore_index=True)
     if "repeat_id" not in long_df.columns:
         raise ValueError("repeat summaries must include repeat_id")
+    long_df = long_df.copy()
+    long_df["model"] = long_df["model"].map(normalize_model_name)
+    srl_model_name = normalize_model_name(srl_model_name)
 
-    controls = list(control_models or CLOSED_LOOP_SIGNIFICANCE_CONTROLS)
+    controls = [normalize_model_name(m) for m in (control_models or CLOSED_LOOP_SIGNIFICANCE_CONTROLS)]
     metric_list = list(metrics or REPEATED_CLOSED_LOOP_METRICS)
     annotate_metrics = set(annotation_metrics or FIG4B_SUMMARY_METRICS)
-    pairwise_rows: List[dict] = []
+    direction_map = {m: CLOSED_LOOP_METRIC_DIRECTION.get(m, "lower_is_better") for m in metric_list}
+    if split_df is None:
+        bench = benchmark_outdir or os.path.abspath(os.path.join("results", "tree_srl_benchmark"))
+        split_df = load_repeat_split_ratios(bench)
+    formal = [m for m in FORMAL_SIGNIFICANCE_CONTROLS if m in controls and m not in ORACLE_DIAGNOSTIC_CONTROLS]
+    # Keep oracle control in the table without formal stars when requested.
+    if BEST_SINGLE_TREE in controls and BEST_SINGLE_TREE not in formal:
+        pass
+    pairwise = build_paired_repeated_significance(
+        srl_model=srl_model_name,
+        control_models=controls,
+        n_perm=config.permutation_replicates,
+        seed=int(getattr(config, "seed", 42)),
+        single_split_exploratory=n_repeats < 2,
+        long_df=long_df,
+        split_df=split_df,
+        formal_controls=formal,
+        metric_direction=direction_map,
+        bidirectional=True,
+    )
+    # Normalize column names expected by closed-loop writers.
+    if not pairwise.empty:
+        pairwise = pairwise.rename(
+            columns={
+                "mean_diff": "mean_srl_minus_control",
+                "CI_low": "bootstrap_ci_low",
+                "CI_high": "bootstrap_ci_high",
+                "wilcoxon_p": "wilcoxon_pvalue",
+                "permutation_p": "permutation_pvalue",
+            }
+        )
     annotation_rows: List[dict] = []
-    for control in controls:
-        if control == srl_model_name:
+    for _, row in pairwise.iterrows():
+        metric = str(row["metric"])
+        if metric not in annotate_metrics:
             continue
-        for metric in metric_list:
-            if metric not in long_df.columns:
-                continue
-            srl_vals = (
-                long_df[long_df["model"] == srl_model_name]
-                .sort_values("repeat_id")[metric]
-                .to_numpy(dtype=float)
-            )
-            ctrl_vals = (
-                long_df[long_df["model"] == control]
-                .sort_values("repeat_id")[metric]
-                .to_numpy(dtype=float)
-            )
-            n = min(len(srl_vals), len(ctrl_vals))
-            if n == 0:
-                continue
-            srl_vals = srl_vals[:n]
-            ctrl_vals = ctrl_vals[:n]
-            diff = srl_vals - ctrl_vals
-            direction = CLOSED_LOOP_METRIC_DIRECTION.get(metric, "lower_is_better")
-            srl_better = float(np.mean(diff)) < 0 if direction == "lower_is_better" else float(np.mean(diff)) > 0
-            ci_low = float(np.percentile(diff, 2.5)) if n > 1 else float("nan")
-            ci_high = float(np.percentile(diff, 97.5)) if n > 1 else float("nan")
-            try:
-                wilcoxon_p = float(wilcoxon(diff).pvalue) if n > 1 and not np.allclose(diff, 0.0) else 1.0
-            except Exception:
-                wilcoxon_p = float("nan")
-            perm_p = permutation_test_mean_diff(diff, config.permutation_replicates, seed=abs(hash(metric + control)) % 10000) if n > 1 else float("nan")
-            p_for_label = float(min(p for p in (wilcoxon_p, perm_p) if np.isfinite(p))) if n > 1 else float("nan")
-            star_label, significance_tier = evaluate_significance_label(
-                p_for_label, ci_low, ci_high, n_repeats=n, srl_better=srl_better,
-                single_split_exploratory=n_repeats == 1,
-            )
-            comp = comparison_result_label(star_label, significance_tier, srl_better, n_repeats)
-            row = {
+        star_label = str(row["significance_label"])
+        comp = str(row["comparison_result"])
+        plot_label = star_label if comp not in {"control_better", "not_significant", "oracle_diagnostic"} else ""
+        if comp == "control_better":
+            plot_label = "control_better"
+        annotation_rows.append(
+            {
                 "metric": metric,
                 "srl_model": srl_model_name,
-                "control_model": control,
-                "direction": direction,
-                "n_repeats": n,
-                "mean_srl": float(np.mean(srl_vals)),
-                "mean_control": float(np.mean(ctrl_vals)),
-                "mean_srl_minus_control": float(np.mean(diff)),
-                "bootstrap_ci_low": ci_low,
-                "bootstrap_ci_high": ci_high,
-                "wilcoxon_pvalue": wilcoxon_p,
-                "permutation_pvalue": perm_p,
+                "control_model": row["control_model"],
                 "significance_label": star_label,
-                "significance_tier": significance_tier,
                 "comparison_result": comp,
+                "plot_label": plot_label,
+                "exploratory": bool(row.get("exploratory", n_repeats < 10)),
             }
-            pairwise_rows.append(row)
-            if metric in annotate_metrics:
-                plot_label = star_label if comp not in {"control_better", "not_significant"} else ""
-                if comp == "control_better":
-                    plot_label = "control_better"
-                annotation_rows.append(
-                    {
-                        "metric": metric,
-                        "srl_model": srl_model_name,
-                        "control_model": control,
-                        "significance_label": star_label,
-                        "comparison_result": comp,
-                        "plot_label": plot_label,
-                        "exploratory": bool(n_repeats < 10),
-                    }
-                )
-    return pd.DataFrame(pairwise_rows), pd.DataFrame(annotation_rows)
+        )
+    return pairwise, pd.DataFrame(annotation_rows)
 
 
 def identify_strongest_parameter_control(summary_df: pd.DataFrame, srl_model_name: str) -> str:

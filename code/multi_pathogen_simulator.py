@@ -49,14 +49,14 @@ except ImportError:  # pragma: no cover
 
 N_STRAINS = 5
 
-# OD600 -> CFU/mL calibration (experimental growth curves; used for provenance / unit conversion).
-ECOLI_OD_TO_CFU_SLOPE = 3.14e8
-ECOLI_OD_TO_CFU_INTERCEPT = -4.81e7
-ECOLI_OD_TO_CFU_R2 = 0.8460
+# OD600 -> CFU/mL calibration (paired OD/CFU measurements; provenance / unit conversion only).
+ECOLI_OD_TO_CFU_SLOPE = 197224987.18551347
+ECOLI_OD_TO_CFU_INTERCEPT = -24156487.659915283
+ECOLI_OD_TO_CFU_R2 = 0.9016120870162722
 
-LLACTIS_OD_TO_CFU_SLOPE = 2.89e8
-LLACTIS_OD_TO_CFU_INTERCEPT = 2.56e7
-LLACTIS_OD_TO_CFU_R2 = 0.8673
+LLACTIS_OD_TO_CFU_SLOPE = 297323449.0240535
+LLACTIS_OD_TO_CFU_INTERCEPT = -15652116.864199936
+LLACTIS_OD_TO_CFU_R2 = 0.8568048924855741
 
 PROFILE_ALIASES = ("paper_figure", "manuscript_strict", "experimental_calibrated")
 DEFAULT_ODE_PROFILE_NAME = "paper_figure"
@@ -179,14 +179,27 @@ def _alpha_matrix() -> np.ndarray:
 
 
 def od_to_cfu_ecoli(od600: float | np.ndarray) -> float | np.ndarray:
-    """Convert E. coli OD600 to CFU/mL (R2 = 0.8460)."""
+    """Convert E. coli OD600 to CFU/mL using the paired-measurement linear calibration."""
     return ECOLI_OD_TO_CFU_SLOPE * od600 + ECOLI_OD_TO_CFU_INTERCEPT
 
 
+od_to_cfu_ecoli.__doc__ = (
+    "Convert E. coli OD600 to CFU/mL "
+    f"(CFU = {ECOLI_OD_TO_CFU_SLOPE} * OD600 + ({ECOLI_OD_TO_CFU_INTERCEPT}); "
+    f"R2 = {ECOLI_OD_TO_CFU_R2})."
+)
+
+
 def od_to_cfu_llactis(od600: float | np.ndarray) -> float | np.ndarray:
-    """Convert L. lactis OD600 to CFU/mL (R2 = 0.8673)."""
+    """Convert L. lactis OD600 to CFU/mL using the paired-measurement linear calibration."""
     return LLACTIS_OD_TO_CFU_SLOPE * od600 + LLACTIS_OD_TO_CFU_INTERCEPT
 
+
+od_to_cfu_llactis.__doc__ = (
+    "Convert L. lactis OD600 to CFU/mL "
+    f"(CFU = {LLACTIS_OD_TO_CFU_SLOPE} * OD600 + ({LLACTIS_OD_TO_CFU_INTERCEPT}); "
+    f"R2 = {LLACTIS_OD_TO_CFU_R2})."
+)
 
 def experimental_calibrated_provenance() -> dict:
     """Conservative provenance notes for the paper_figure profile.
@@ -210,11 +223,15 @@ def experimental_calibrated_provenance() -> dict:
         ),
         "od_to_cfu_calibration": {
             "E_coli": {
-                "formula": "CFU = 3.14e8 * OD600 - 4.81e7",
+                "formula": (
+                    f"CFU = {ECOLI_OD_TO_CFU_SLOPE} * OD600 + ({ECOLI_OD_TO_CFU_INTERCEPT})"
+                ),
                 "R2": ECOLI_OD_TO_CFU_R2,
             },
             "L_lactis": {
-                "formula": "CFU = 2.89e8 * OD600 + 2.56e7",
+                "formula": (
+                    f"CFU = {LLACTIS_OD_TO_CFU_SLOPE} * OD600 + ({LLACTIS_OD_TO_CFU_INTERCEPT})"
+                ),
                 "R2": LLACTIS_OD_TO_CFU_R2,
             },
         },
@@ -1170,7 +1187,7 @@ MORRIS_OUTPUT_DEFINITIONS: Dict[str, str] = {
     ),
     "dose_count": "number of dose events in the closed-loop run",
     "cumulative_dosage": "sum of administered dose amounts (dose_count * u_max)",
-    "P_AUC": "AUC of plasma concentration over the treatment horizon",
+    "P_AUC": "time-averaged carrying-capacity-normalized probiotic abundance, (1/T) integral P(t)/K_P dt",
 }
 MORRIS_OUTPUT_DISPLAY: Dict[str, str] = {
     "LR1": r"$LR_1$",
