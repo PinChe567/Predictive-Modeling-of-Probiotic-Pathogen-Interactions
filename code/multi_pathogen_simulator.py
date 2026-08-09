@@ -1589,33 +1589,41 @@ def _plot_morris_mu_focused(
         else:
             vmax = max(vmax, 1e-12)
 
-    fig_w = max(14.0, 1.15 * len(outputs) + 4.0)
-    fig, axes = plt.subplots(1, 2, figsize=(fig_w, 4.8), constrained_layout=True)
+    fig, axes = plt.subplots(2, 1, figsize=(12.5, 7.8), sharex=True, constrained_layout=True)
     cmap = plt.get_cmap(HEATMAP_SEQUENTIAL).copy()
     cmap.set_bad("#bdbdbd")
+    last_im = None
 
-    for ax, M, title in (
-        (axes[0], M_mu, r"Relative $\mu^\star$ (max among all 31 factors)"),
-        (axes[1], M_sig, r"Relative $\sigma$ (max among all 31 factors)"),
+    for ax_idx, (ax, M, title) in enumerate(
+        (
+            (axes[0], M_mu, r"Relative $\mu^\star$ (max among all 31 factors)"),
+            (axes[1], M_sig, r"Relative $\sigma$ (max among all 31 factors)"),
+        )
     ):
         masked = np.ma.masked_invalid(M)
-        im = ax.imshow(masked, aspect="auto", cmap=cmap, vmin=0.0, vmax=vmax)
+        last_im = ax.imshow(masked, aspect="auto", cmap=cmap, vmin=0.0, vmax=vmax)
         ax.set_xticks(np.arange(len(outputs)))
-        ax.set_xticklabels(xlabels, rotation=35, ha="right", fontsize=9)
         ax.set_yticks(np.arange(len(MORRIS_MU_FACTORS)))
-        ax.set_yticklabels(ylabels, fontsize=10)
-        ax.set_title(title, fontsize=11)
+        ax.set_yticklabels(ylabels, fontsize=22)
+        ax.set_title(title, fontsize=24)
+        if ax_idx == 1:
+            ax.set_xticklabels(xlabels, rotation=32, ha="right", fontsize=20)
+        else:
+            ax.tick_params(axis="x", labelbottom=False)
         for i in range(M.shape[0]):
             for j in range(M.shape[1]):
                 out = outputs[j]
                 # Annotate only near-invariant / missing cells; omit numeric labels.
                 if near_invariant.get(str(out), False) or not np.isfinite(M[i, j]):
-                    ax.text(j, i, "N/A", ha="center", va="center", color="#424242", fontsize=8)
-        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+                    ax.text(j, i, "N/A", ha="center", va="center", color="#424242", fontsize=18)
+
+    cbar = fig.colorbar(last_im, ax=axes, fraction=0.035, pad=0.02)
+    cbar.set_label("Relative index", fontsize=22)
+    cbar.ax.tick_params(labelsize=20)
 
     fig.suptitle(
         r"Morris elementary effects for $\mu_1$–$\mu_5$ (relative to max over all 31 factors)",
-        fontsize=12,
+        fontsize=24,
     )
     png_path = os.path.join(outdir, "mu_morris_summary.png")
     paths = save_figure(fig, png_path, dpi=600)

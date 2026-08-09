@@ -192,21 +192,28 @@ REPEATED_CLOSED_LOOP_METRICS: Tuple[str, ...] = (
     "probiotic_constraint_success_rate",
 )
 
-FIG4_PANEL_ORDER: Tuple[Tuple[str, str, str], ...] = (
+# Study-local fixed-Umax plot inventory (NOT manuscript Fig4.png composite order).
+# Manuscript Fig4.png = A: ode_back_r2_barplot.png; B: fixed_umax_representative.png.
+FIXED_UMAX_STUDY_PANEL_ORDER: Tuple[Tuple[str, str, str], ...] = (
     ("A", "fixed_umax_representative.png", "deterministic representative trajectories"),
     ("B", "fixed_umax_summary.png", "Fixed-Umax forward ODE summary (single point estimate per model)"),
     ("C", "fixed_umax_constraint_success.png", "Constraint success rates (optional if redundant)"),
 )
 
-FIG4_PRIMARY_FIGURES: Tuple[str, ...] = (
+FIXED_UMAX_STUDY_PRIMARY_FIGURES: Tuple[str, ...] = (
     "fixed_umax_representative.png",
     "fixed_umax_summary.png",
 )
 
-FIG4_OPTIONAL_FIGURES: Tuple[str, ...] = (
+FIXED_UMAX_STUDY_OPTIONAL_FIGURES: Tuple[str, ...] = (
     "fixed_umax_constraint_success.png",
 )
-FIG4_OPTIONAL_SUMMARY_FIGURES = FIG4_OPTIONAL_FIGURES
+FIG4_OPTIONAL_SUMMARY_FIGURES = FIXED_UMAX_STUDY_OPTIONAL_FIGURES
+
+MANUSCRIPT_FIG4_PANEL_SOURCES: Tuple[Tuple[str, str, str], ...] = (
+    ("A", "ode_back_r2_barplot.png", "code-generated source image"),
+    ("B", "fixed_umax_representative.png", "code-generated source image"),
+)
 
 FIG4B_SUMMARY_METRICS: Tuple[str, ...] = (
     "mean_total_dosage",
@@ -339,13 +346,24 @@ FIG5_REPRESENTATIVE_CONDITIONS: Tuple[str, ...] = (
     "TAR_fixed_training_tuned_global",
     "TAR_optimized",
 )
-FIG5_PANEL_ORDER: Tuple[Tuple[str, str, str], ...] = (
+# Study-local umax-optimization plot inventory (NOT manuscript Fig5.png composite order).
+# Manuscript Fig5.png = A: manually assembled workflow; B: constraint feasibility;
+# C: score landscape; D: composite-penalty policy ablation supplementary.
+UMAX_OPTIMIZATION_STUDY_PANEL_ORDER: Tuple[Tuple[str, str, str], ...] = (
     ("A", "umax_score_landscape.png", "composite-penalty response landscape"),
     ("B", "umax_constraint_feasibility.png", "constraint feasibility"),
     ("C", "umax_ode_ablation.png", "Illustrative ODE ablation trajectories"),
     ("D", "umax_summary_ablation.png", "Repeated ablation summary (mean ± 95% CI)"),
 )
-FIG5_PRIMARY_FIGURES: Tuple[str, ...] = tuple(panel[1] for panel in FIG5_PANEL_ORDER)
+UMAX_OPTIMIZATION_STUDY_PRIMARY_FIGURES: Tuple[str, ...] = tuple(
+    panel[1] for panel in UMAX_OPTIMIZATION_STUDY_PANEL_ORDER
+)
+MANUSCRIPT_FIG5_PANEL_SOURCES: Tuple[Tuple[str, Optional[str], str], ...] = (
+    ("A", None, "manually assembled Umax optimizer workflow"),
+    ("B", "umax_constraint_feasibility.png", "code-generated source image"),
+    ("C", "umax_score_landscape.png", "code-generated source image"),
+    ("D", "umax_summary_ablation_composite_supplementary.png", "code-generated source image"),
+)
 FIG5B_SUMMARY_METRICS: Tuple[str, ...] = (
     "mean_total_dosage",
     "mean_P_AUC",
@@ -605,12 +623,16 @@ def build_fig4_manifest_fields(
     significance_for_manuscript: bool,
     prediction_sources: Optional[Sequence[str]] = None,
 ) -> dict:
-    """Metadata for manuscript Fig. 4 fixed-Umax validation panels."""
+    """Metadata for fixed-Umax study plots and manuscript Fig4.png composite sources."""
     sig_mode = "ode_single_forward_run_no_repeat_significance"
-    panel_order = [
+    study_panel_order = [
         _fig_panel_record(
             panel, filename, desc,
-            role="primary_manuscript_figure" if filename in FIG4_PRIMARY_FIGURES else "optional_manuscript_figure",
+            role=(
+                "study_primary_figure"
+                if filename in FIXED_UMAX_STUDY_PRIMARY_FIGURES
+                else "study_optional_figure"
+            ),
             input_sources={
                 "fixed_umax_representative.png": [
                     f"fixed_umax_validation/{FIXED_UMAX_TRAJECTORIES_CSV}",
@@ -626,25 +648,47 @@ def build_fig4_manifest_fields(
             umax_setting="fixed_paper_figure_profile",
             significance_mode="none" if filename == "fixed_umax_representative.png" else sig_mode,
         )
-        for panel, filename, desc in FIG4_PANEL_ORDER
+        for panel, filename, desc in FIXED_UMAX_STUDY_PANEL_ORDER
     ]
-    primary = [entry["filename"] for entry in panel_order if entry["filename"] in FIG4_PRIMARY_FIGURES]
+    for entry in study_panel_order:
+        entry["note"] = (
+            "Study-local fixed-Umax plot inventory; not manuscript Fig4.png composite panel order."
+        )
+    primary = [
+        entry["filename"]
+        for entry in study_panel_order
+        if entry["filename"] in FIXED_UMAX_STUDY_PRIMARY_FIGURES
+    ]
+    manuscript_composite = [
+        {
+            "panel": panel,
+            "filename": filename,
+            "description": desc,
+            "source_kind": "code_generated_source_image",
+        }
+        for panel, filename, desc in MANUSCRIPT_FIG4_PANEL_SOURCES
+    ]
     return {
-        "figure": "Fig. 4",
-        "figure_title": "fixed-Umax validation",
+        "figure": "fixed_umax_validation_study",
+        "figure_title": "fixed-Umax validation (study-local plots)",
         "validation_section": "fixed-Umax validation",
         "validation_mode": FIXED_UMAX_VALIDATION_MODE,
+        "manuscript_composite": "Fig4.png",
+        "manuscript_composite_panel_sources": manuscript_composite,
+        "manuscript_composite_note": (
+            "Manuscript Fig4.png = A: ode_back_r2_barplot.png + B: fixed_umax_representative.png."
+        ),
         "prediction_input_sources": list(prediction_sources or []),
         "fixed_umax_rule": (
-            "Fig. 4 uses multi_pathogen_simulator paper_figure bio parameters and shared "
-            f"Umax={PAPER_FIGURE_PROFILE.u_max_rep:g} µg/mL. Per-model Tthr is aggregated from "
-            "benchmark prediction repeats (median of per-split medians). Exactly three forward "
-            "ODE runs total (TAR / BestTree / UniformTreeMean); no per-test-row and no per-repeat ODE."
+            "Fixed-Umax representative trajectories use multi_pathogen_simulator paper_figure bio "
+            f"parameters and shared Umax={PAPER_FIGURE_PROFILE.u_max_rep:g} µg/mL. Per-model Tthr is "
+            "aggregated from benchmark prediction repeats (median of per-split medians). Exactly three "
+            "forward ODE runs total (TAR / BestTree / UniformTreeMean); no per-test-row and no per-repeat ODE."
         ),
-        "figure_panel_mapping": panel_order,
-        "fig4_panel_order": panel_order,
-        "fig4_primary_figures": primary,
-        "fig4_optional_figures": list(FIG4_OPTIONAL_FIGURES),
+        "figure_panel_mapping": study_panel_order,
+        "fixed_umax_study_panel_mapping": study_panel_order,
+        "fixed_umax_study_primary_figures": primary,
+        "fixed_umax_study_optional_figures": list(FIXED_UMAX_STUDY_OPTIONAL_FIGURES),
         "fig4_models": list(FIG4_FIXED_UMAX_MODELS),
         "fig4_model_display_labels": {m: FIXED_UMAX_DISPLAY_LABELS[m] for m in FIG4_FIXED_UMAX_MODELS},
         "fig4_significance_comparisons": list(FIG4_SIGNIFICANCE_CONTROLS),
@@ -658,8 +702,8 @@ def build_fig4_manifest_fields(
         "manuscript_safe": False,
         "illustrative_only_representative": True,
         "significance_rule": (
-            "Fig. 4 ODE is a single illustrative forward comparison (3 runs). "
-            "Fig. 4B bars are point estimates without repeat-level ODE CIs."
+            "Fixed-Umax ODE is a single illustrative forward comparison (3 runs). "
+            "Study-local summary bars are point estimates without repeat-level ODE CIs."
         ),
     }
 
@@ -670,10 +714,10 @@ def build_fig5_manifest_fields(*, n_repeats: int, significance_for_manuscript: b
         if significance_for_manuscript
         else "exploratory_no_formal_stars_n_repeats_lt_10"
     )
-    panel_order = [
+    study_panel_order = [
         _fig_panel_record(
             panel, filename, desc,
-            role="primary_manuscript_figure",
+            role="study_local_figure",
             input_sources={
                 "umax_score_landscape.png": [
                     "umax_optimization/umax_score_landscape_curves.csv",
@@ -704,13 +748,37 @@ def build_fig5_manifest_fields(*, n_repeats: int, significance_for_manuscript: b
             }.get(filename, "optimized_and_training_fixed_policy_ablation"),
             significance_mode="none" if filename != "umax_summary_ablation.png" else sig_mode,
         )
-        for panel, filename, desc in FIG5_PANEL_ORDER
+        for panel, filename, desc in UMAX_OPTIMIZATION_STUDY_PANEL_ORDER
+    ]
+    for entry in study_panel_order:
+        entry["note"] = (
+            "Study-local umax-optimization plot inventory; not manuscript Fig5.png composite panel order."
+        )
+    manuscript_composite = [
+        {
+            "panel": panel,
+            "filename": filename,
+            "description": desc,
+            "source_kind": (
+                "manually_assembled_schematic" if filename is None else "code_generated_source_image"
+            ),
+            "manual_schematic_required": filename is None,
+        }
+        for panel, filename, desc in MANUSCRIPT_FIG5_PANEL_SOURCES
     ]
     return {
-        "figure": "Fig. 5",
-        "figure_title": "Umax optimization analysis",
+        "figure": "umax_optimization_study",
+        "figure_title": "Umax optimization analysis (study-local plots)",
         "validation_section": "Umax optimization analysis",
         "validation_mode": UMAX_OPTIMIZATION_STUDY_MODE,
+        "manuscript_composite": "Fig5.png",
+        "manuscript_composite_panel_sources": manuscript_composite,
+        "manuscript_composite_note": (
+            "Manuscript Fig5.png = A: manually assembled Umax optimizer workflow; "
+            "B: umax_constraint_feasibility.png; C: umax_score_landscape.png; "
+            "D: umax_summary_ablation_composite_supplementary.png. "
+            "supp_fig2.png = A: umax_ode_ablation.png; B: umax_summary_ablation.png."
+        ),
         "fixed_umax_policies_training_only": True,
         "validation_rows_excluded_from_policy_derivation": True,
         "optimized_umax_rule": (
@@ -729,9 +797,14 @@ def build_fig5_manifest_fields(*, n_repeats: int, significance_for_manuscript: b
         "tar_predicts_only": "Tthr vector (Tthr_1..Tthr_5); Umax selected post hoc by closed_loop_eval.py",
         "primary_umax_selection_policy": UMAX_SELECTION_POLICY_DEFAULT,
         "aspiration_then_pareto_role": "sensitivity_analysis_diagnostic_only",
-        "figure_panel_mapping": panel_order,
-        "fig5_panel_order": panel_order,
-        "fig5_primary_figures": list(FIG5_PRIMARY_FIGURES),
+        "figure_panel_mapping": study_panel_order,
+        "umax_optimization_study_panel_mapping": study_panel_order,
+        "umax_optimization_study_primary_figures": list(UMAX_OPTIMIZATION_STUDY_PRIMARY_FIGURES),
+        "fig5_primary_figures": [
+            "umax_constraint_feasibility.png",
+            "umax_score_landscape.png",
+            "umax_summary_ablation_composite_supplementary.png",
+        ],
         "fig5_ablation_conditions": list(FIG5_ABLATION_CONDITIONS),
         "fig5_secondary_ablation_conditions": list(FIG5_SECONDARY_ABLATION_CONDITIONS),
         "fig5_secondary_summary_conditions": list(FIG5_SECONDARY_SUMMARY_CONDITIONS),

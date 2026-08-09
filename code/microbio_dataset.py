@@ -37,12 +37,10 @@ from multi_pathogen_simulator import (
     BIO_COLS,
     B0_S_REP,
     DEFAULT_ODE_PROFILE_NAME,
-    ECOLI_OD_TO_CFU_R2,
     GAMMA_S_REP,
     K_PATHOGEN,
     K_REP,
     KPI_COLS,
-    LLACTIS_OD_TO_CFU_R2,
     MU_REP,
     N_STRAINS,
     P0_S_REP,
@@ -91,8 +89,21 @@ def microbio_generation_provenance_fields() -> Dict[str, object]:
     }
 
 
+def _format_profile_value(value: object) -> str:
+    arr = np.asarray(value, dtype=float)
+    if arr.ndim == 0:
+        return repr(float(arr))
+    if arr.ndim == 1:
+        return "[" + ", ".join(repr(float(v)) for v in arr) + "]"
+    return np.array2string(arr, separator=", ", max_line_width=120)
+
+
 def build_ode_profile_parameters_df() -> pd.DataFrame:
+    """Parameter table for PAPER_FIGURE_PROFILE values actually used by the simulator."""
     profile = PAPER_FIGURE_PROFILE
+    range_informed_note = (
+        "Range-informed model default for paper_figure; not a direct experimental fit"
+    )
     rows: List[dict] = []
 
     def add_vector_param(
@@ -118,6 +129,28 @@ def build_ode_profile_parameters_df() -> pd.DataFrame:
                 }
             )
 
+    def add_scalar_param(
+        parameter: str,
+        code_name: str,
+        value: float,
+        unit: str,
+        source_category: str,
+        source_experiment: str,
+        notes: str,
+    ) -> None:
+        rows.append(
+            {
+                "parameter": parameter,
+                "code_name": code_name,
+                "index": 0,
+                "value": float(value),
+                "unit": unit,
+                "source_category": source_category,
+                "source_experiment": source_experiment,
+                "notes": notes,
+            }
+        )
+
     add_vector_param(
         "pathogen initial density",
         "B0_rep",
@@ -132,21 +165,21 @@ def build_ode_profile_parameters_df() -> pd.DataFrame:
         "k_rep",
         profile.k_rep,
         "h^-1",
-        "experimental_fit",
-        "E. coli CFU logistic growth",
-        "Anchor mean k=0.241 h^-1 with strain-relative scaling",
+        "experiment_informed_model_default",
+        "E. coli monoculture growth range",
+        range_informed_note,
     )
     add_vector_param(
         "pathogen AMP killing rate",
         "gamma_s_rep",
         profile.gamma_s_rep,
         "mL ug^-1 h^-1",
-        "preliminary_estimate",
-        "AMP pathogen suppression (not monoculture fitted)",
-        "Preliminary estimate gamma_s=0.0046",
+        "experiment_informed_model_default",
+        "AMP pathogen-response range",
+        range_informed_note,
     )
     add_vector_param(
-        "resistant-fraction split",
+        "stressed-state susceptibility modifier",
         "rho_rep",
         profile.rho_rep,
         "dimensionless",
@@ -155,146 +188,455 @@ def build_ode_profile_parameters_df() -> pd.DataFrame:
         "Sets gamma_T = gamma_S * (1-rho)",
     )
     add_vector_param(
-        "resistance transfer rate",
+        "stress-response transition rate",
         "mu_rep",
         profile.mu_rep,
         "h^-1",
         "model_assumption",
         "not directly identifiable from monoculture curves",
-        "Sensitivity parameter",
+        "Structural sensitivity parameter",
+    )
+    add_vector_param(
+        "pathogen stressed-state growth factor",
+        "eta_pathogen",
+        profile.eta_pathogen,
+        "dimensionless",
+        "model_assumption",
+        "not directly identifiable from monoculture curves",
+        "Structural growth modifier in the stressed compartment",
     )
     add_vector_param(
         "pathogen carrying capacity",
         "K_pathogen",
         profile.K_pathogen,
         "CFU/mL",
-        "experimental_fit",
-        "E. coli CFU stationary phase",
-        "Stationary phase ~1.5e9 CFU/mL with strain scaling",
+        "experiment_informed_model_default",
+        "E. coli CFU-scale stationary-phase range",
+        range_informed_note,
+    )
+    add_vector_param(
+        "pathogen-pathogen competition (alpha diagonal/off-diagonal)",
+        "alpha",
+        np.asarray(profile.alpha, dtype=float).ravel(),
+        "dimensionless",
+        "model_assumption",
+        "multi-strain competition structure",
+        "Fixed competition matrix; not experimentally fitted",
+    )
+    add_vector_param(
+        "pathogen-probiotic competition",
+        "beta",
+        profile.beta,
+        "dimensionless",
+        "model_assumption",
+        "community competition structure",
+        "Fixed defaults; not experimentally fitted",
     )
 
     scalar_params = [
-        ("probiotic initial density", "P0", profile.P0, "CFU/mL", "experimental_fit", "L. lactis CFU growth", "Logistic Y0=1.676e6 CFU/mL"),
-        ("probiotic growth rate", "k_P", profile.k_P, "h^-1", "experimental_fit", "L. lactis CFU growth", "Logistic k=0.2522 h^-1"),
-        ("probiotic carrying capacity", "K_P", profile.K_P, "CFU/mL", "experimental_fit", "L. lactis OD-to-CFU YM average", "OD-derived K_P ~3.35e8 CFU/mL"),
-        ("probiotic AMP killing rate", "gamma_P", profile.gamma_P, "mL ug^-1 h^-1", "preliminary_estimate", "AMP probiotic suppression", "Preliminary estimate gamma_P=0.0015"),
-        ("probiotic resistant split", "rho_P", profile.rho_P, "dimensionless", "model_assumption", "two-compartment probiotic model", "Not fitted from monoculture curves"),
-        ("probiotic resistance transfer", "mu_P", profile.mu_P, "h^-1", "model_assumption", "two-compartment probiotic model", "Not fitted from monoculture curves"),
-        ("probiotic tolerant growth factor", "eta_P", profile.eta_P, "dimensionless", "model_assumption", "two-compartment probiotic model", "Not fitted from monoculture curves"),
-        ("AMP decay rate", "lambda_amp", profile.lambda_amp, "h^-1", "model_assumption", "AMP pharmacokinetics", "Not fitted from growth curves"),
-        ("detection interval", "dt_detect", profile.dt_detect, "h", "model_assumption", "controller sampling", "10-min detection interval"),
-        ("simulation horizon", "t_end", profile.t_end, "h", "model_assumption", "simulation horizon", "96 h forward simulation"),
-        ("integration step", "dt", profile.dt, "h", "model_assumption", "forward Euler step", "Fixed time step for ODE integration"),
+        (
+            "probiotic initial density",
+            "P0",
+            profile.P0,
+            "CFU/mL",
+            "experiment_informed_model_default",
+            "L. lactis CFU-scale inoculum range",
+            range_informed_note,
+        ),
+        (
+            "probiotic growth rate",
+            "k_P",
+            profile.k_P,
+            "h^-1",
+            "experiment_informed_model_default",
+            "L. lactis monoculture growth range",
+            range_informed_note,
+        ),
+        (
+            "probiotic carrying capacity",
+            "K_P",
+            profile.K_P,
+            "CFU/mL",
+            "experiment_informed_model_default",
+            "L. lactis CFU-scale carrying-capacity range",
+            range_informed_note + "; not derived from the OD-CFU provenance equations",
+        ),
+        (
+            "probiotic AMP killing rate",
+            "gamma_P",
+            profile.gamma_P,
+            "mL ug^-1 h^-1",
+            "experiment_informed_model_default",
+            "AMP probiotic-response range",
+            range_informed_note,
+        ),
+        (
+            "probiotic stressed-state susceptibility modifier",
+            "rho_P",
+            profile.rho_P,
+            "dimensionless",
+            "model_assumption",
+            "two-compartment probiotic model",
+            "Not fitted from monoculture curves",
+        ),
+        (
+            "probiotic stress-response transition rate",
+            "mu_P",
+            profile.mu_P,
+            "h^-1",
+            "model_assumption",
+            "two-compartment probiotic model",
+            "Not fitted from monoculture curves",
+        ),
+        (
+            "probiotic stressed-state growth factor",
+            "eta_P",
+            profile.eta_P,
+            "dimensionless",
+            "model_assumption",
+            "two-compartment probiotic model",
+            "Not fitted from monoculture curves",
+        ),
+        (
+            "AMP decay rate",
+            "lambda_amp",
+            profile.lambda_amp,
+            "h^-1",
+            "model_assumption",
+            "AMP pharmacokinetics",
+            "Not fitted from growth curves",
+        ),
+        (
+            "representative dosing ceiling",
+            "u_max_rep",
+            profile.u_max_rep,
+            "ug/mL",
+            "model_default",
+            "controller default",
+            "Representative u_max used by paper_figure profile",
+        ),
+        (
+            "detection interval",
+            "dt_detect",
+            profile.dt_detect,
+            "h",
+            "model_assumption",
+            "controller sampling",
+            "Nominal detection interval",
+        ),
+        (
+            "simulation horizon",
+            "t_end",
+            profile.t_end,
+            "h",
+            "model_assumption",
+            "simulation horizon",
+            "Forward simulation horizon",
+        ),
+        (
+            "integration step",
+            "dt",
+            profile.dt,
+            "h",
+            "model_assumption",
+            "forward Euler step",
+            "Fixed time step for ODE integration",
+        ),
     ]
     for parameter, code_name, value, unit, source_category, source_experiment, notes in scalar_params:
-        rows.append(
-            {
-                "parameter": parameter,
-                "code_name": code_name,
-                "index": 0,
-                "value": float(value),
-                "unit": unit,
-                "source_category": source_category,
-                "source_experiment": source_experiment,
-                "notes": notes,
-            }
+        add_scalar_param(
+            parameter, code_name, value, unit, source_category, source_experiment, notes
         )
-    return pd.DataFrame(rows)
+    add_vector_param(
+        "representative pathogen thresholds",
+        "T_thr_rep",
+        profile.T_thr_rep,
+        "CFU/mL",
+        "model_default",
+        "controller default",
+        "Representative T_thr vector used by paper_figure profile",
+    )
+
+    df = pd.DataFrame(rows)
+    _assert_ode_profile_parameters_match_paper_figure(df, profile)
+    return df
+
+
+def _assert_ode_profile_parameters_match_paper_figure(
+    df: pd.DataFrame,
+    profile: object,
+) -> None:
+    """Fail fast if the provenance numeric table drifts from PAPER_FIGURE_PROFILE."""
+    expected: Dict[Tuple[str, int], float] = {}
+    vector_fields = {
+        "B0_rep": profile.B0_rep,
+        "k_rep": profile.k_rep,
+        "gamma_s_rep": profile.gamma_s_rep,
+        "rho_rep": profile.rho_rep,
+        "mu_rep": profile.mu_rep,
+        "eta_pathogen": profile.eta_pathogen,
+        "K_pathogen": profile.K_pathogen,
+        "beta": profile.beta,
+        "T_thr_rep": profile.T_thr_rep,
+    }
+    for code_name, values in vector_fields.items():
+        for idx, value in enumerate(np.asarray(values, dtype=float), start=1):
+            expected[(code_name, idx)] = float(value)
+    alpha_flat = np.asarray(profile.alpha, dtype=float).ravel()
+    for idx, value in enumerate(alpha_flat, start=1):
+        expected[("alpha", idx)] = float(value)
+    scalar_fields = {
+        "P0": profile.P0,
+        "k_P": profile.k_P,
+        "K_P": profile.K_P,
+        "gamma_P": profile.gamma_P,
+        "rho_P": profile.rho_P,
+        "mu_P": profile.mu_P,
+        "eta_P": profile.eta_P,
+        "lambda_amp": profile.lambda_amp,
+        "u_max_rep": profile.u_max_rep,
+        "dt_detect": profile.dt_detect,
+        "t_end": profile.t_end,
+        "dt": profile.dt,
+    }
+    for code_name, value in scalar_fields.items():
+        expected[(code_name, 0)] = float(value)
+
+    observed = {
+        (str(row.code_name), int(row.index)): float(row.value)
+        for row in df.itertuples(index=False)
+    }
+    missing = sorted(set(expected) - set(observed))
+    extra = sorted(set(observed) - set(expected))
+    if missing or extra:
+        raise AssertionError(
+            "ode profile parameter table keys drifted from PAPER_FIGURE_PROFILE: "
+            f"missing={missing}, extra={extra}"
+        )
+    for key, exp_val in expected.items():
+        obs_val = observed[key]
+        if not np.isclose(obs_val, exp_val, rtol=0.0, atol=0.0, equal_nan=False):
+            # Use a tiny absolute tolerance only for float representation noise.
+            if not np.isclose(obs_val, exp_val, rtol=1e-12, atol=0.0):
+                raise AssertionError(
+                    f"ode profile parameter mismatch for {key}: table={obs_val!r}, "
+                    f"PAPER_FIGURE_PROFILE={exp_val!r}"
+                )
 
 
 def build_ode_parameter_sources_df() -> pd.DataFrame:
-    return pd.DataFrame(
-        [
-            {
-                "parameter_group": "OD_to_CFU",
-                "code_parameter": "E_coli_OD600",
-                "organism": "E. coli",
-                "experiment_type": "OD calibration",
-                "value_used": "CFU = 3.14e8 * OD600 - 4.81e7",
-                "unit": "CFU/mL per OD600",
-                "fit_R2": ECOLI_OD_TO_CFU_R2,
-                "used_as": "unit conversion / provenance for CFU-scale pathogen parameters",
-                "limitation": "Linear OD-CFU mapping; not used directly as ODE state conversion during simulation",
-            },
-            {
-                "parameter_group": "OD_to_CFU",
-                "code_parameter": "L_lactis_OD600",
-                "organism": "L. lactis",
-                "experiment_type": "OD calibration",
-                "value_used": "CFU = 2.89e8 * OD600 + 2.56e7",
-                "unit": "CFU/mL per OD600",
-                "fit_R2": LLACTIS_OD_TO_CFU_R2,
-                "used_as": "unit conversion for K_P derivation",
-                "limitation": "Linear OD-CFU mapping",
-            },
-            {
-                "parameter_group": "growth_rate",
-                "code_parameter": "k_rep",
-                "organism": "E. coli",
-                "experiment_type": "CFU logistic growth",
-                "value_used": "k=0.2443 and 0.2378 h^-1; mean=0.241 h^-1",
-                "unit": "h^-1",
-                "fit_R2": np.nan,
-                "used_as": "default pathogen k_rep anchor",
-                "limitation": "Monoculture fit; multi-strain scaling applied in ODE defaults",
-            },
-            {
-                "parameter_group": "growth_rate",
-                "code_parameter": "k_P",
-                "organism": "L. lactis",
-                "experiment_type": "CFU logistic growth",
-                "value_used": "Y0=1.676e6 CFU/mL, k=0.2522 h^-1",
-                "unit": "CFU/mL; h^-1",
-                "fit_R2": 0.9037,
-                "used_as": "default probiotic growth parameters (P0, k_P)",
-                "limitation": "Monoculture fit in probiotic medium",
-            },
-            {
-                "parameter_group": "carrying_capacity",
-                "code_parameter": "K_P",
-                "organism": "L. lactis",
-                "experiment_type": "OD-derived stationary phase",
-                "value_used": "3.35e8",
-                "unit": "CFU/mL",
-                "fit_R2": np.nan,
-                "used_as": "default probiotic carrying capacity",
-                "limitation": "Derived from OD-to-CFU converted YM average",
-            },
-            {
-                "parameter_group": "AMP_killing",
-                "code_parameter": "gamma_P",
-                "organism": "L. lactis",
-                "experiment_type": "preliminary AMP estimate",
-                "value_used": "0.0015",
-                "unit": "mL ug^-1 h^-1",
-                "fit_R2": np.nan,
-                "used_as": "default probiotic AMP suppression rate",
-                "limitation": "Preliminary estimate; not fully identifiable from monoculture growth alone",
-            },
-            {
-                "parameter_group": "AMP_killing",
-                "code_parameter": "gamma_s_rep",
-                "organism": "E. coli",
-                "experiment_type": "preliminary AMP estimate",
-                "value_used": "0.0046",
-                "unit": "mL ug^-1 h^-1",
-                "fit_R2": np.nan,
-                "used_as": "default pathogen AMP suppression rate",
-                "limitation": "Preliminary estimate; not fully identifiable from monoculture growth alone",
-            },
-            {
-                "parameter_group": "model_assumption",
-                "code_parameter": "alpha,beta,rho,mu,eta,lambda_amp",
-                "organism": "mixed community model",
-                "experiment_type": "structural assumption",
-                "value_used": "fixed defaults in ODE simulator",
-                "unit": "mixed",
-                "fit_R2": np.nan,
-                "used_as": "competition, resistance, AMP decay structure",
-                "limitation": "Not directly identifiable from current monoculture growth curves",
-            },
-        ]
+    """Source/provenance notes for PAPER_FIGURE_PROFILE (values used == profile values)."""
+    profile = PAPER_FIGURE_PROFILE
+    range_informed_limitation = (
+        "Experiment-informed range used to choose a model default; "
+        "not a direct experimental fit to the paper_figure value"
     )
+    # CFU-scale OD calibration provenance only (not ODE integration inputs).
+    ecoli_od_slope = 197224987.18551347
+    ecoli_od_intercept = -24156487.659915283
+    ecoli_od_r2 = 0.9016120870162722
+    llactis_od_slope = 297323449.0240535
+    llactis_od_intercept = -15652116.864199936
+    llactis_od_r2 = 0.8568048924855741
+
+    rows = [
+        {
+            "parameter_group": "OD_to_CFU",
+            "code_parameter": "E_coli_OD600",
+            "organism": "E. coli",
+            "experiment_type": "OD calibration provenance",
+            "value_used": (
+                f"CFU = {ecoli_od_slope} * OD600 + ({ecoli_od_intercept})"
+            ),
+            "unit": "CFU/mL per OD600",
+            "fit_R2": ecoli_od_r2,
+            "used_as": "CFU-scale provenance equation only",
+            "limitation": (
+                "Linear OD-CFU provenance mapping; not used directly during ODE "
+                "integration and not used to derive the current K_P value"
+            ),
+        },
+        {
+            "parameter_group": "OD_to_CFU",
+            "code_parameter": "L_lactis_OD600",
+            "organism": "L. lactis",
+            "experiment_type": "OD calibration provenance",
+            "value_used": (
+                f"CFU = {llactis_od_slope} * OD600 + ({llactis_od_intercept})"
+            ),
+            "unit": "CFU/mL per OD600",
+            "fit_R2": llactis_od_r2,
+            "used_as": "CFU-scale provenance equation only",
+            "limitation": (
+                "Linear OD-CFU provenance mapping; not used directly during ODE "
+                "integration and not used to derive the current K_P value"
+            ),
+        },
+        {
+            "parameter_group": "growth_rate",
+            "code_parameter": "k_rep",
+            "organism": "E. coli",
+            "experiment_type": "experiment-informed model default",
+            "value_used": _format_profile_value(profile.k_rep),
+            "unit": "h^-1",
+            "fit_R2": np.nan,
+            "used_as": "PAPER_FIGURE_PROFILE.pathogen growth-rate vector",
+            "limitation": range_informed_limitation,
+        },
+        {
+            "parameter_group": "growth_rate",
+            "code_parameter": "k_P",
+            "organism": "L. lactis",
+            "experiment_type": "experiment-informed model default",
+            "value_used": _format_profile_value(profile.k_P),
+            "unit": "h^-1",
+            "fit_R2": np.nan,
+            "used_as": "PAPER_FIGURE_PROFILE.probiotic growth rate",
+            "limitation": range_informed_limitation,
+        },
+        {
+            "parameter_group": "initial_density",
+            "code_parameter": "P0",
+            "organism": "L. lactis",
+            "experiment_type": "experiment-informed model default",
+            "value_used": _format_profile_value(profile.P0),
+            "unit": "CFU/mL",
+            "fit_R2": np.nan,
+            "used_as": "PAPER_FIGURE_PROFILE.probiotic initial density",
+            "limitation": range_informed_limitation,
+        },
+        {
+            "parameter_group": "carrying_capacity",
+            "code_parameter": "K_pathogen",
+            "organism": "E. coli",
+            "experiment_type": "experiment-informed model default",
+            "value_used": _format_profile_value(profile.K_pathogen),
+            "unit": "CFU/mL",
+            "fit_R2": np.nan,
+            "used_as": "PAPER_FIGURE_PROFILE.pathogen carrying-capacity vector",
+            "limitation": range_informed_limitation,
+        },
+        {
+            "parameter_group": "carrying_capacity",
+            "code_parameter": "K_P",
+            "organism": "L. lactis",
+            "experiment_type": "experiment-informed model default",
+            "value_used": _format_profile_value(profile.K_P),
+            "unit": "CFU/mL",
+            "fit_R2": np.nan,
+            "used_as": "PAPER_FIGURE_PROFILE.probiotic carrying capacity",
+            "limitation": (
+                range_informed_limitation
+                + "; not derived from the OD-CFU provenance equations"
+            ),
+        },
+        {
+            "parameter_group": "AMP_killing",
+            "code_parameter": "gamma_P",
+            "organism": "L. lactis",
+            "experiment_type": "experiment-informed model default",
+            "value_used": _format_profile_value(profile.gamma_P),
+            "unit": "mL ug^-1 h^-1",
+            "fit_R2": np.nan,
+            "used_as": "PAPER_FIGURE_PROFILE.probiotic AMP killing rate",
+            "limitation": range_informed_limitation,
+        },
+        {
+            "parameter_group": "AMP_killing",
+            "code_parameter": "gamma_s_rep",
+            "organism": "E. coli",
+            "experiment_type": "experiment-informed model default",
+            "value_used": _format_profile_value(profile.gamma_s_rep),
+            "unit": "mL ug^-1 h^-1",
+            "fit_R2": np.nan,
+            "used_as": "PAPER_FIGURE_PROFILE.pathogen AMP killing-rate vector",
+            "limitation": range_informed_limitation,
+        },
+        {
+            "parameter_group": "model_assumption",
+            "code_parameter": "alpha,beta,rho,mu,eta,lambda_amp",
+            "organism": "mixed community model",
+            "experiment_type": "structural assumption",
+            "value_used": (
+                "alpha="
+                + _format_profile_value(profile.alpha)
+                + "; beta="
+                + _format_profile_value(profile.beta)
+                + "; rho_rep="
+                + _format_profile_value(profile.rho_rep)
+                + "; mu_rep="
+                + _format_profile_value(profile.mu_rep)
+                + "; eta_pathogen="
+                + _format_profile_value(profile.eta_pathogen)
+                + "; rho_P="
+                + _format_profile_value(profile.rho_P)
+                + "; mu_P="
+                + _format_profile_value(profile.mu_P)
+                + "; eta_P="
+                + _format_profile_value(profile.eta_P)
+                + "; lambda_amp="
+                + _format_profile_value(profile.lambda_amp)
+            ),
+            "unit": "mixed",
+            "fit_R2": np.nan,
+            "used_as": (
+                "competition, stressed-state susceptibility modifiers, "
+                "stress-response transition rates, and AMP decay structure"
+            ),
+            "limitation": "Model assumptions; not directly identifiable from monoculture growth curves",
+        },
+    ]
+    df = pd.DataFrame(rows)
+    _assert_ode_parameter_sources_match_paper_figure(df, profile)
+    return df
+
+
+def _assert_ode_parameter_sources_match_paper_figure(
+    df: pd.DataFrame,
+    profile: object,
+) -> None:
+    """Ensure source-table value_used strings encode current PAPER_FIGURE_PROFILE values."""
+    expected_by_code = {
+        "k_rep": _format_profile_value(profile.k_rep),
+        "k_P": _format_profile_value(profile.k_P),
+        "P0": _format_profile_value(profile.P0),
+        "K_pathogen": _format_profile_value(profile.K_pathogen),
+        "K_P": _format_profile_value(profile.K_P),
+        "gamma_P": _format_profile_value(profile.gamma_P),
+        "gamma_s_rep": _format_profile_value(profile.gamma_s_rep),
+    }
+    for code_parameter, expected in expected_by_code.items():
+        sub = df[df["code_parameter"] == code_parameter]
+        if sub.empty:
+            raise AssertionError(
+                f"ode parameter sources table missing code_parameter={code_parameter!r}"
+            )
+        value_used = str(sub.iloc[0]["value_used"])
+        if value_used != expected:
+            raise AssertionError(
+                f"ode parameter sources value_used mismatch for {code_parameter}: "
+                f"table={value_used!r}, PAPER_FIGURE_PROFILE={expected!r}"
+            )
+    assumption = df[df["code_parameter"] == "alpha,beta,rho,mu,eta,lambda_amp"]
+    if assumption.empty:
+        raise AssertionError("ode parameter sources table missing model-assumption row")
+    assumption_text = str(assumption.iloc[0]["value_used"])
+    for fragment in (
+        _format_profile_value(profile.alpha),
+        _format_profile_value(profile.beta),
+        _format_profile_value(profile.rho_rep),
+        _format_profile_value(profile.mu_rep),
+        _format_profile_value(profile.eta_pathogen),
+        _format_profile_value(profile.rho_P),
+        _format_profile_value(profile.mu_P),
+        _format_profile_value(profile.eta_P),
+        _format_profile_value(profile.lambda_amp),
+    ):
+        if fragment not in assumption_text:
+            raise AssertionError(
+                "ode parameter sources model-assumption row missing PAPER_FIGURE_PROFILE "
+                f"fragment {fragment!r}"
+            )
 
 TARGET_COLS = ["u_max"] + [f"Tthr_{i}" for i in range(1, 6)]
 TARGET_COLS_MAIN = [f"Tthr_{i}" for i in range(1, 6)]

@@ -87,7 +87,7 @@ Phase C — Formal evaluation (Stage 1)
 | `ode_back_validation.py`         | Step 6: ODE-back functional validation                                                                                             |
 | `figure_audit.py`                | Steps 4 / 7 / 9 / 11: figure generation + audit                                                                                    |
 | `closed_loop_eval.py`            | Steps 5b / 8 / 10b: Umax weight screening, closed-loop / Umax optimizer; CLI `--parameter_screening` / `--locked_final_evaluation` |
-| `derive_optimizer_references.py` | Step 10a: dose reference, fixed Umax policies; **Fig. 5B** (`build_umax_objective_alignment`)                                      |
+| `derive_optimizer_references.py` | Step 10a: dose reference, fixed Umax policies; objective-alignment diagnostic CSV (not a current manuscript composite panel)      |
 
 
 > Still **9** `.py` **files**. Removed duplicates: Fig. 4 plot wrapper (now `figure_audit`), Umax alignment + screening orchestration (merged into `derive_optimizer_references` / `microbio_dataset`). **Computation logic unchanged.**
@@ -362,15 +362,24 @@ python .\ode_back_validation.py `
 
 ---
 
-## 7 — Generate Fig. 3
+## 7 — Generate Fig. 3 source images
 
 ```powershell
 python .\figure_audit.py --mode generate_plots --groups benchmark --benchmark_outdir .\results\tree_srl_benchmark
 ```
 
-**Outputs:** `results\tree_srl_benchmark\figure\` (PNG + SVG); Fig. 3D heatmap in `results\ode_back_validation\figure\`
+**Manuscript composite `Fig3.png` sources:**
 
-**Note:** `n_repeats >= 10` for formal significance stars
+| Panel | Source | Kind |
+| ----- | ------ | ---- |
+| A | manually assembled TAR architecture schematic | manual |
+| B | `model_compare_r2.png` | code-generated |
+| C | `target_weight_heatmap.png` | code-generated |
+| D | `uncertainty_decomposition_by_target.png` | code-generated |
+
+**Outputs:** `results\tree_srl_benchmark\figure\` (PNG + SVG). Panel A is **not** auto-rendered.
+
+**Note:** `n_repeats >= 10` for formal significance stars. `prediction_error_heatmap.png` and `ode_back_outcome_heatmap.png` are diagnostic only and are **not** current main-manuscript panels.
 
 ---
 
@@ -400,15 +409,20 @@ python .\closed_loop_eval.py `
 
 ---
 
-## 9 — Generate Fig. 4
+## 9 — Generate Fig. 4 source images
 
 ```powershell
-python .\figure_audit.py --mode generate_plots --groups fixed_umax_validation --fixed_umax_outdir .\results\fixed_umax_validation
+python .\figure_audit.py --mode generate_plots --groups ode_back_validation,fixed_umax_validation --results_root .\results
 ```
 
-**Outputs:** `results\fixed_umax_validation\figure\` (PNG + SVG)
+**Manuscript composite `Fig4.png` sources:**
 
-**Note:** Requires step 8 and `fixed_umax_representative_trajectories.csv`. Fig. 4B shows **single forward ODE point estimates** (not 100-repeat CIs).
+| Panel | Source | Kind |
+| ----- | ------ | ---- |
+| A | `ode_back_r2_barplot.png` (`results\ode_back_validation\figure\`) | code-generated |
+| B | `fixed_umax_representative.png` (`results\fixed_umax_validation\figure\`) | code-generated |
+
+**Note:** Requires step 6 (ODE-back) and step 8 (`fixed_umax_representative_trajectories.csv`). Study-local `fixed_umax_summary.png` is **not** a current manuscript composite panel. Fixed-Umax trajectories are deterministic single forward ODE runs (not 100-repeat CIs).
 
 ---
 
@@ -481,24 +495,56 @@ python .\closed_loop_eval.py `
 
 ---
 
-## 11 — Generate Fig. 5 (step 10c)
+## 11 — Generate Fig. 5 source images (step 10c)
 
 ```powershell
 python .\figure_audit.py --mode generate_plots --groups umax_optimization --umax_optimization_outdir .\results\umax_optimization
 ```
 
-**Outputs:** `results\umax_optimization\figure\` (PNG + SVG)
+**Manuscript composite `Fig5.png` sources:**
 
-- `umax_score_landscape` — composite-penalty response landscape vs Umax (selected markers; aspiration distance available as diagnostic in CSV)
-- `umax_score_components_landscape` — four normalized penalty / shortfall terms
-- `umax_objective_alignment` — Dose reference limit / P_AUC constraint limit / LR feasibility / Pathogen feasibility / Final selected Umax
-- `umax_ode_ablation` — three-column trajectories (raises if any column missing)
-- `umax_summary_ablation` — Fig. 5D primary (three TAR policies)
-- `umax_summary_ablation_with_rf` — secondary (TAR + RF optimized / tuned global)
+| Panel | Source | Kind |
+| ----- | ------ | ---- |
+| A | manually assembled Umax optimizer workflow | manual |
+| B | `umax_constraint_feasibility.png` | code-generated |
+| C | `umax_score_landscape.png` | code-generated |
+| D | `umax_summary_ablation_composite_supplementary.png` | code-generated |
+
+**Outputs:** `results\umax_optimization\figure\` (PNG + SVG). Panel A is **not** auto-rendered.
+
+Also regenerated (not main-manuscript panels):
+
+- `umax_ode_ablation` + `umax_summary_ablation` → **supp_fig2.png** sources
+- `umax_score_components_landscape`, `umax_objective_alignment`, `umax_summary_ablation_with_rf` — study-local diagnostics
 
 ---
 
 ## Appendix
+
+### Manuscript composite source map
+
+Exact assembled-figure sources (manual panels are not code-rendered):
+
+| Composite | Panel | Source |
+| --------- | ----- | ------ |
+| `Fig3.png` | A | manually assembled TAR architecture schematic |
+| `Fig3.png` | B | `model_compare_r2.png` |
+| `Fig3.png` | C | `target_weight_heatmap.png` |
+| `Fig3.png` | D | `uncertainty_decomposition_by_target.png` |
+| `Fig4.png` | A | `ode_back_r2_barplot.png` |
+| `Fig4.png` | B | `fixed_umax_representative.png` |
+| `Fig5.png` | A | manually assembled Umax optimizer workflow |
+| `Fig5.png` | B | `umax_constraint_feasibility.png` |
+| `Fig5.png` | C | `umax_score_landscape.png` |
+| `Fig5.png` | D | `umax_summary_ablation_composite_supplementary.png` |
+| `supp_fig1.png` | — | `uncertainty_decomposition.png` |
+| `supp_fig2.png` | A | `umax_ode_ablation.png` |
+| `supp_fig2.png` | B | `umax_summary_ablation.png` |
+| `supp_fig3.png` | — | `direct_threshold_comparison.png` |
+| `supp_fig4.png` | — | `mu_morris_summary.png` |
+
+`prediction_error_heatmap.png` and `ode_back_outcome_heatmap.png` remain available as diagnostics but are **not** current main-manuscript panels. Study-local `FIXED_UMAX_STUDY_PANEL_ORDER` / `UMAX_OPTIMIZATION_STUDY_PANEL_ORDER` inventories must not be read as the manuscript composite order above.
+
 
 ### Audit and regenerate all figures
 
@@ -512,7 +558,9 @@ Each generated figure is written as **both** `.png` (300 dpi) and `.svg` (vector
 
 ### Fig. 4 behavior
 
-- Reads per-repeat Tthr predictions from step 5; aggregates one median Tthr per model
+- Manuscript `Fig4.png` panel A is ODE-back `ode_back_r2_barplot.png` (step 6)
+- Manuscript `Fig4.png` panel B is fixed-Umax `fixed_umax_representative.png` (step 8/9)
+- Fixed-Umax step reads per-repeat Tthr predictions from step 5; aggregates one median Tthr per model
 - Runs paper_figure + fixed Umax 18 µg/mL forward ODE once per model (TAR / BestTree / UniformTreeMean) — **3 ODE runs total**
 - Reading predictions does **not** run ODE per test row
 
@@ -521,7 +569,7 @@ Each generated figure is written as **both** `.png` (300 dpi) and `.svg` (vector
 Import-Csv .\results\fixed_umax_validation\fixed_umax_validation_cases.csv | Measure-Object
 ```
 
-If cases >> 3: wrong step (Fig. 5) or old logic — delete outdir and re-run with `--force_rerun`
+If cases >> 3: wrong step (Umax optimization study) or old logic — delete outdir and re-run with `--force_rerun`
 
 ### Screening figures (`results\screening\`)
 
@@ -547,13 +595,15 @@ Development-only records, **not** Fig. 3–5. Old `parameter_screening_summary.p
 ### Fig. 5 notes
 
 
-| Panel | Content                                                           |
-| ----- | ----------------------------------------------------------------- |
-| 5A    | Score landscape (composite-penalty response vs Umax)              |
-| 5B    | Objective alignment (P_AUC uses constraint limit, not argmax)     |
-| 5C    | Three-column ODE trajectories (median / tuned global / optimized) |
-| 5D    | TAR three-policy comparison; secondary includes RF                |
+| Panel | Content |
+| ----- | ------- |
+| 5A | Manually assembled Umax optimizer workflow (not auto-rendered) |
+| 5B | `umax_constraint_feasibility.png` — constraint feasibility across Umax |
+| 5C | `umax_score_landscape.png` — composite-penalty response landscape vs Umax |
+| 5D | `umax_summary_ablation_composite_supplementary.png` — composite-penalty policy ablation |
 
+
+**Supplementary related to Fig. 5:** `supp_fig2.png` = `umax_ode_ablation.png` + `umax_summary_ablation.png`.
 
 **References:** P_AUC / LR use metadata `desired_*`; dose reference from training-only q90; fixed Umax policies from training rows only (per repeat; validation held out). **Primary optimizer (manuscript):** `feasible_first` — lowest-dosage feasible Umax on the grid, else lowest composite-penalty fallback. `aspiration_then_pareto` is sensitivity-only (`umax_selection_policy_sensitivity.csv`). Umax is **not** a supervised ML target. `--backend auto` uses Numba for u_grid; `--n_jobs` parallelizes repeats.
 
