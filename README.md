@@ -1,11 +1,17 @@
 # Dataset: Predictive Modeling of Probiotic-Pathogen Interactions Under Threshold-Triggered Antimicrobial Peptide Control
 
-This repository contains the source code, raw experimental data, generated simulation datasets, and analysis outputs used in our study, **"Predictive Modeling of Probiotic-Pathogen Interactions Under Threshold-Triggered Antimicrobial Peptide Control"**.
+This repository provides the **source code**, **parameter-analysis plan**, and **raw experimental data** used in the study, “Predictive Modeling of Probiotic–Pathogen Interactions Under Threshold-Triggered Antimicrobial Peptide Control.”
 
-The project combines experimental microbial characterization, a synthetic multi-pathogen ODE simulation engine, threshold inverse-design modeling, ODE-back validation, and Umax optimization for threshold-triggered antimicrobial peptide (AMP) control.
+> **Repository scope:** GitHub intentionally contains only the code, parameter-analysis plan, and experimental data. The generated simulation database and final analysis results are archived separately on Zenodo: **[INSERT ZENODO DOI OR URL]**.
 
 ---
+## 💻 Parameter Analysis
 
+Author: Huang, P.-C.
+
+* **`analysis_plan/parameter_screening_plan.yaml`**
+  
+---
 ## 💻 Code
 
 Author: Huang, P.-C.
@@ -25,11 +31,14 @@ The files correspond to the results presented in **Figures 2-5** of the manuscri
 | `closed_loop_eval.py` | Performs fixed-Umax validation, Umax weight screening, and Umax optimization studies. |
 | `derive_optimizer_references.py` | Derives training-only dose reference scales and fixed Umax policies. |
 | `figure_audit.py` | Regenerates manuscript figures from saved CSV outputs and exports PNG/SVG files. |
+| `corrEcoli.py` | Performs the paired *E. coli* OD600–CFU linear regression and exports the calibration plot in PNG/SVG formats. |
+| `corrLlactis.py` | Performs the paired *L. lactis* OD600–CFU linear regression and exports the calibration plot in PNG/SVG formats. |
+| `correlation.py` | Verifies that the paired OD600–CFU regression results agree across the correlation scripts, simulator constants, and dataset provenance table. |
 
 For the full execution order and command-line examples, please see:
 
 ```text
-pipeline.md
+code/pipeline.md
 ```
 
 ---
@@ -53,3 +62,15 @@ Preliminary hBD-3 response assays used to define approximate AMP-response ranges
 * **`AMP to L. lactis CFU.xlsx`**: Preliminary *L. lactis* AMP-response observation under varying hBD-3 concentrations.
 * **`AMP to E. coli.xlsx`**: Preliminary *E. coli* AMP-response observation.
 * **`AMP to E. coli second dose.xlsx`**: Preliminary repeated-exposure observation; not evidence of validated adaptive tolerance or stable resistance.
+* **`Correlation.xlsx`**: Auxiliary workbook associated with the OD600–CFU correlation analysis.
+
+---
+
+## 📦 Generated Database and Results
+
+The generated database and final analysis results are deposited on Zenodo as:
+
+* **`formal_datasets.zip`**: The complete code-generated `data/` directory.
+* **`predictions_and_results.zip`**: The complete code-generated `results/` directory, including saved predictions, numerical result tables, manifests, and CSV/PNG/SVG figure outputs.
+
+Zenodo: **[INSERT ZENODO DOI OR URL]**
