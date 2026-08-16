@@ -777,7 +777,7 @@ def build_fig5_manifest_fields(*, n_repeats: int, significance_for_manuscript: b
             "Manuscript Fig5.png = A: manually assembled Umax optimizer workflow; "
             "B: umax_constraint_feasibility.png; C: umax_score_landscape.png; "
             "D: umax_summary_ablation_composite_supplementary.png. "
-            "supp_fig2.png = A: umax_ode_ablation.png; B: umax_summary_ablation.png."
+            "supp_fig4.png = A: umax_ode_ablation.png; B: umax_summary_ablation.png."
         ),
         "fixed_umax_policies_training_only": True,
         "validation_rows_excluded_from_policy_derivation": True,
@@ -4187,7 +4187,7 @@ def write_fixed_umax_primary_figure_pngs(
     n_repeats: int = 1,
     annotations_df: Optional[pd.DataFrame] = None,
 ) -> Dict[str, str]:
-    """Write Fig. 4A/4B PNGs under outdir/figure (fixed-Umax validation)."""
+    """Write study-local fixed-Umax PNGs (manuscript Fig. 4b is the representative trajectory panel)."""
     from figure_audit import plot_fixed_umax_representative, plot_fixed_umax_summary
 
     figure_dir = _closed_loop_figure_dir(outdir)

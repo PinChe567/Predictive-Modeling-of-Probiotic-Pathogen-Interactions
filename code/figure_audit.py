@@ -306,7 +306,7 @@ MODEL_DISPLAY_LABELS = {
     "LegacySRL": "Legacy SRL",
 }
 
-MAIN_COMPARE_ORDER = [TAR_MODEL, RANDOM_FOREST, UNIFORM_TREE_MEAN, BEST_SINGLE_TREE]
+MAIN_COMPARE_ORDER = [TAR_MODEL, RANDOM_FOREST, BEST_SINGLE_TREE, UNIFORM_TREE_MEAN]
 ODE_BACK_BAR_MODEL_ORDER = [TAR_MODEL, RANDOM_FOREST, BEST_SINGLE_TREE, UNIFORM_TREE_MEAN]
 MANUSCRIPT_BAR_MODEL_ORDER = MAIN_COMPARE_ORDER
 
@@ -337,17 +337,17 @@ MANUSCRIPT_COMPOSITE_PANEL_SOURCES: Dict[str, List[Tuple[str, Optional[str], str
         ("D", "umax_summary_ablation_composite_supplementary.png", "code-generated source image"),
     ],
     "supp_fig1.png": [
-        ("A", "uncertainty_decomposition.png", "code-generated source image"),
+        ("A", "mu_morris_summary.png", "code-generated source image"),
     ],
     "supp_fig2.png": [
-        ("A", "umax_ode_ablation.png", "code-generated source image"),
-        ("B", "umax_summary_ablation.png", "code-generated source image"),
+        ("A", "uncertainty_decomposition.png", "code-generated source image"),
     ],
     "supp_fig3.png": [
         ("A", "direct_threshold_comparison.png", "code-generated source image"),
     ],
     "supp_fig4.png": [
-        ("A", "mu_morris_summary.png", "code-generated source image"),
+        ("A", "umax_ode_ablation.png", "code-generated source image"),
+        ("B", "umax_summary_ablation.png", "code-generated source image"),
     ],
 }
 
@@ -412,19 +412,19 @@ MANUSCRIPT_SOURCE_MAPPING: Dict[str, Dict[str, str]] = {
     "uncertainty_decomposition.png": {
         "description": "aleatoric vs epistemic uncertainty scatters",
         "source_group": "tree_srl_benchmark",
-        "manuscript_composite": "supp_fig1.png",
+        "manuscript_composite": "supp_fig2.png",
         "manuscript_panel": "A",
     },
     "umax_ode_ablation.png": {
         "description": "illustrative ODE ablation trajectories",
         "source_group": "umax_optimization",
-        "manuscript_composite": "supp_fig2.png",
+        "manuscript_composite": "supp_fig4.png",
         "manuscript_panel": "A",
     },
     "umax_summary_ablation.png": {
         "description": "TAR-only Umax policy ablation summary",
         "source_group": "umax_optimization",
-        "manuscript_composite": "supp_fig2.png",
+        "manuscript_composite": "supp_fig4.png",
         "manuscript_panel": "B",
     },
     "direct_threshold_comparison.png": {
@@ -436,7 +436,7 @@ MANUSCRIPT_SOURCE_MAPPING: Dict[str, Dict[str, str]] = {
     "mu_morris_summary.png": {
         "description": "Morris mu1-mu5 relative elementary effects",
         "source_group": "mu_sensitivity",
-        "manuscript_composite": "supp_fig4.png",
+        "manuscript_composite": "supp_fig1.png",
         "manuscript_panel": "A",
     },
 }
@@ -445,7 +445,7 @@ FIG3_PRIMARY_FIGURES: Tuple[str, ...] = tuple(
     fn for _, fn, _ in FIG3_PANEL_ORDER if fn is not None
 )
 FIG3_SUPPLEMENTARY_FIGURES: Tuple[str, ...] = (
-    "uncertainty_decomposition.png",  # supp_fig1.png
+    "uncertainty_decomposition.png",  # supp_fig2.png
     "prediction_error_heatmap.png",  # diagnostic only; not a current main-manuscript panel
     "ode_back_outcome_heatmap.png",  # diagnostic only; not a current main-manuscript panel
     "ode_back_pred_vs_ref_scatter.png",
@@ -519,10 +519,10 @@ FIG5_ABLATION_BAR_COLORS: Dict[str, str] = {
     "TAR_fixed_training_tuned_global": PALETTE_BLUE_LIGHT,
 }
 
-FIG5_ODE_POLICY_SHORT_LABELS: Dict[str, str] = {
-    "TAR_fixed_training_median": "Training median",
-    "TAR_fixed_training_tuned_global": "Tuned global",
-    "TAR_optimized": "Optimized",
+FIG5_ODE_COLUMN_TITLES: Dict[str, str] = {
+    "TAR_fixed_training_median": "TAR + training-median",
+    "TAR_fixed_training_tuned_global": "TAR + training-tuned global",
+    "TAR_optimized": "TAR + optimized",
 }
 
 FIXED_UMAX_VALIDATION_SUBDIR = "fixed_umax_validation"
@@ -540,8 +540,9 @@ SIGNIFICANCE_RULE_TEXT = (
     "on paired repeat differences with Holm adjustment within each displayed metric; "
     "star levels use corrected_p_holm only (*,**,***,****); "
     "Wilcoxon and sign-flip permutation p-values are sensitivity columns only; "
-    "BestSingleTree is an outer-validation oracle diagnostic (Best tree (oracle)) and is "
-    "excluded from formal TAR-vs-control stars; no formal stars when n_repeats < 10"
+    "TAR vs RF / UniformTreeMean are starred from Holm-adjusted p-values; "
+    "BestSingleTree/BestTree is an oracle diagnostic and never receives a formal significance bracket; "
+    "no formal stars when n_repeats < 10"
 )
 
 MODEL_BAR_COLORS: Dict[str, str] = {
@@ -715,13 +716,13 @@ def plot_metric_barplot(
                 color="black", linewidth=1.15, clip_on=False, zorder=5,
             )
             ax.text(
-                (x1 + x2) / 2.0, y_bracket + tick_h + 0.025 * yspan,
-                label, ha="center", va="bottom", fontsize=14.5, fontweight="bold",
+                (x1 + x2) / 2.0, y_bracket + tick_h + 0.045 * yspan,
+                label, ha="center", va="bottom", fontsize=16, fontweight="bold",
                 clip_on=False, zorder=6,
             )
-            max_bracket_top = max(max_bracket_top, y_bracket + tick_h + 0.18 * yspan)
+            max_bracket_top = max(max_bracket_top, y_bracket + tick_h + 0.22 * yspan)
         if valid_pairs:
-            ax.set_ylim(bottom=min(ymin - 0.05 * yspan, ax.get_ylim()[0]), top=max_bracket_top + 0.28 * yspan)
+            ax.set_ylim(bottom=min(ymin - 0.05 * yspan, ax.get_ylim()[0]), top=max_bracket_top + 0.35 * yspan)
 
     if own_fig:
         finalize_figure_layout(fig, rect=(0.0, 0.16, 1.0, 1.0))
@@ -785,26 +786,42 @@ def significance_pairs_for_plot(
 ) -> List[Tuple[str, str, str]]:
     """Build (srl, control, star_label) triples from Holm-adjusted Nadeau–Bengio results.
 
-    BestSingleTree / oracle diagnostics are never starred. Wilcoxon/permutation columns
-    are ignored for the plotted label.
+    Wilcoxon/permutation columns are ignored for the plotted label.
+    Oracle-diagnostic BestSingleTree/BestTree never receives a formal significance bracket.
     """
     del bidirectional  # direction retained in CSV; plotted label is the Holm star string
     pairs: List[Tuple[str, str, str]] = []
     if pairwise_df.empty or not significance_for_manuscript:
         return pairs
     try:
-        from tree_srl_benchmark import ORACLE_DIAGNOSTIC_CONTROLS
+        from tree_srl_benchmark import ORACLE_DIAGNOSTIC_CONTROLS, significance_label as _sig
     except ImportError:
         ORACLE_DIAGNOSTIC_CONTROLS = {BEST_SINGLE_TREE}
+
+        def _sig(p_value: float) -> str:
+            if not np.isfinite(p_value):
+                return "na"
+            if p_value < 0.0001:
+                return "****"
+            if p_value < 0.001:
+                return "***"
+            if p_value < 0.01:
+                return "**"
+            if p_value < 0.05:
+                return "*"
+            return "ns"
+
     sub = pairwise_df[(pairwise_df["metric"] == metric) & (pairwise_df["srl_model"] == srl_model)]
     for control_model in control_models:
-        if normalize_model_name(control_model) in ORACLE_DIAGNOSTIC_CONTROLS:
-            continue
         row = sub[sub["control_model"] == control_model]
         if row.empty:
             continue
         row0 = row.iloc[0]
-        if bool(row0.get("is_oracle_diagnostic", False)):
+        control_norm = normalize_model_name(control_model)
+        is_oracle = bool(row0.get("is_oracle_diagnostic", False)) or (
+            control_norm in ORACLE_DIAGNOSTIC_CONTROLS or control_norm in {BEST_SINGLE_TREE, "BestTree"}
+        )
+        if is_oracle:
             continue
         if "is_formal_comparison" in row0.index and not bool(row0.get("is_formal_comparison", False)):
             continue
@@ -812,19 +829,13 @@ def significance_pairs_for_plot(
             "formal",
             "formal_control_better",
         }:
-            # Keep exploratory runs unstarred on manuscript figures.
             if int(row0.get("n_repeats", 0)) < 10:
                 continue
         label = str(row0.get("significance_label", "ns"))
+        if "corrected_p_holm" in row0.index and pd.notna(row0["corrected_p_holm"]):
+            label = _sig(float(row0["corrected_p_holm"]))
         if label in {"ns", "na", "nan", ""}:
             continue
-        # Prefer explicit Holm column when present (guards against stale CSV labels).
-        if "corrected_p_holm" in row0.index and pd.notna(row0["corrected_p_holm"]):
-            from tree_srl_benchmark import significance_label as _sig
-
-            label = _sig(float(row0["corrected_p_holm"]))
-            if label in {"ns", "na", "nan", ""}:
-                continue
         pairs.append((srl_model, str(row0["control_model"]), label))
     return pairs
 
@@ -1006,7 +1017,7 @@ def plot_ode_back_r2_barplot(
     significance_pairs: Optional[List[Tuple[str, str, str]]] = None,
     n_repeats: int = 0,
     metric_col: str = ODE_BACK_BAR_METRIC,
-    ylabel: str = "Mean functional outcome\nR square",
+    ylabel: str = "Mean functional outcome R square",
 ) -> None:
     """Bar plot of repeat-averaged ODE-back R² with 95% CI and formal significance brackets."""
     del n_repeats  # reserved for callers/manifests
@@ -1027,9 +1038,14 @@ def plot_ode_back_r2_barplot(
     levels_pre = _assign_significance_bracket_levels(valid_pairs_pre, model_to_x_pre)
     max_bracket_level = max((level for level in levels_pre if level >= 0), default=-1)
     # Match model_compare_r2 typography: title/ylabel/xticks ~2× with room for stars.
-    title_fs, ylabel_fs, tick_fs = 28, 26, 23
+    title_fs, ylabel_fs, tick_fs = 28, 20, 23
+    if len(title) > 48:
+        title_fs = 16
     fig_height = 10.6 + 1.45 * max(max_bracket_level + 1, 0)
-    fig, ax = plt.subplots(figsize=(max(11.0, 2.2 * max(len(plot_df), 1)), fig_height))
+    fig_width = max(11.0, 2.2 * max(len(plot_df), 1))
+    if len(title) > 48:
+        fig_width = max(fig_width, 13.2)
+    fig, ax = plt.subplots(figsize=(fig_width, fig_height))
     plot_metric_barplot(
         plot_df,
         outpath,
@@ -1074,7 +1090,7 @@ def plot_ode_back_r2_barplot(
             top_need = max([hi] + star_ys)
             ax.set_ylim(lo - 0.30 * yspan, top_need + 0.55 * yspan)
     # Leave a larger title band above the axes so stars are not squeezed.
-    finalize_figure_layout(fig, rect=(0.18, 0.14, 0.98, 0.84))
+    finalize_figure_layout(fig, rect=(0.22, 0.14, 0.98, 0.84))
     assert_figure_artists_inside_canvas(fig, context="ode_back_r2_barplot")
     save_figure(fig, outpath, dpi=600)
     plt.close(fig)
@@ -1243,14 +1259,14 @@ def plot_model_metric_combined_panel(
 
     top_levels = _pair_levels(significance_pairs)
     bot_levels = _pair_levels(rmse_significance_pairs)
-    # Extra height/left room: large titles + wrapped y-labels must clear stars and tick numbers.
-    fig_h = 11.0 + 1.0 * (max(top_levels, 0) + max(bot_levels, 0) + 2)
+    # Extra height/left room: large titles must clear stars and tick numbers.
+    fig_h = 0.75 * (11.4 + 1.25 * (max(top_levels, 0) + max(bot_levels, 0) + 2))
     fig, axes = plt.subplots(2, 1, figsize=(9.2, fig_h), sharex=True)
 
     r2_title = "Mean target-wise R square"
-    r2_ylabel = "Mean target-wise R square\n(original scale)"
+    r2_ylabel = "Mean target-wise R square"
     rmse_title = "Mean target-wise RMSE"
-    rmse_ylabel = "Mean target-wise RMSE\n(original scale)"
+    rmse_ylabel = "Mean target-wise RMSE"
     title_fs, ylabel_fs, tick_fs = 28, 26, 23
 
     plot_metric_barplot(
@@ -1262,7 +1278,7 @@ def plot_model_metric_combined_panel(
         model_order=model_order,
         significance_pairs=significance_pairs,
         ax=axes[0],
-        significance_bracket_step_scale=1.55,
+        significance_bracket_step_scale=2.35,
     )
     axes[0].set_title(r2_title, fontsize=title_fs, pad=18)
     axes[0].set_ylabel(r2_ylabel, fontsize=ylabel_fs, labelpad=14)
@@ -1279,7 +1295,7 @@ def plot_model_metric_combined_panel(
         model_order=model_order,
         significance_pairs=rmse_significance_pairs,
         ax=axes[1],
-        significance_bracket_step_scale=1.55,
+        significance_bracket_step_scale=1.85,
     )
     axes[1].set_title(rmse_title, fontsize=title_fs, pad=18)
     axes[1].set_ylabel(rmse_ylabel, fontsize=ylabel_fs, labelpad=14)
@@ -1293,7 +1309,7 @@ def plot_model_metric_combined_panel(
             label.set_rotation(45)
             label.set_ha("right")
             label.set_fontsize(tick_fs)
-    finalize_figure_layout(fig, rect=(0.16, 0.10, 0.98, 0.94), h_pad=3.2)
+    finalize_figure_layout(fig, rect=(0.16, 0.10, 0.98, 0.94), h_pad=2.4)
     assert_figure_artists_inside_canvas(fig, context="model_compare_r2")
     save_figure(fig, outpath, dpi=600)
     plt.close(fig)
@@ -1480,7 +1496,7 @@ def _plot_uncertainty_by_target_bars(
     if per_target.empty or len(targets) <= 1:
         return
     fig_bar, axes_bar = plt.subplots(
-        1, 2, figsize=(8.0, 4.2), gridspec_kw={"width_ratios": [1.15, 0.85]}, constrained_layout=True,
+        1, 2, figsize=(8.0, 3.15), gridspec_kw={"width_ratios": [1.15, 0.85]}, constrained_layout=True,
     )
     x = np.arange(len(targets))
     ale = [float(per_target.loc[per_target["target"] == t, "mean_aleatoric_std"].iloc[0]) for t in targets]
@@ -1545,7 +1561,7 @@ def _plot_uncertainty_by_target_bars(
         error_kw={"linewidth": 0.9, "ecolor": "black"},
     )
     axes_bar[1].set_xticks(x)
-    axes_bar[1].set_xticklabels(targets, fontsize=11)
+    axes_bar[1].set_xticklabels(targets, fontsize=11, rotation=35, ha="right")
     axes_bar[1].set_ylim(0, 1)
     axes_bar[1].set_ylabel("Epistemic / total", fontsize=11.5)
     axes_bar[1].set_title("Epistemic fraction by target", fontsize=13, pad=4)
@@ -1776,7 +1792,7 @@ def plot_representative_ode_trajectory(
     P_total = history_df["P_total_CFU_per_mL"].to_numpy(dtype=float)
 
     title_fs, label_fs, tick_fs, legend_fs = 16, 14, 12.5, 12.5
-    fig, axes = plt.subplots(3, 1, figsize=(11.5, 9.2), sharex=True)
+    fig, axes = plt.subplots(3, 1, figsize=(11.5, 9.3), sharex=True)
     axes[0].plot(times, C, color=TRAJECTORY_AMP, linewidth=1.8)
     axes[0].set_ylabel(r"AMP" + "\n" + r"($\mu$g mL$^{-1}$)", fontsize=label_fs, labelpad=10)
     axes[0].set_title(
@@ -1793,7 +1809,7 @@ def plot_representative_ode_trajectory(
         labelpad=10,
     )
     axes[1].set_title(
-        "Probiotic (total, S/R)" if probiotic_two_compartment else "Probiotic",
+        r"Probiotic total, $P=P_S+P_T$" if probiotic_two_compartment else "Probiotic",
         fontsize=title_fs,
         pad=8,
     )
@@ -1833,7 +1849,7 @@ def plot_representative_ode_trajectory(
         ax.set_xlim(float(times[0]), float(times[-1]))
     for ax in axes[:2]:
         plt.setp(ax.get_xticklabels(), visible=False)
-    finalize_figure_layout(fig, h_pad=3.8, pad=2.2, rect=(0.14, 0.06, 0.985, 0.94))
+    finalize_figure_layout(fig, h_pad=0.12, pad=1.0, rect=(0.14, 0.08, 0.96, 0.91))
     assert_figure_artists_inside_canvas(fig, context="representative_paper_figure")
     save_figure(fig, outpath)
     plt.close(fig)
@@ -1869,7 +1885,7 @@ def plot_fixed_umax_representative(
     *,
     display_labels: Optional[Sequence[str]] = None,
 ) -> None:
-    """Fig. 4A: TAR / BestTree / UniformTreeMean at shared fixed Umax; only Tthr differs."""
+    """Fig. 4B: TAR / BestTree / UniformTreeMean at shared fixed Umax; only Tthr differs."""
     order = [m for m in FIG4_FIXED_UMAX_MODELS if m in model_labels or m in trajectories_df["model"].unique()]
     model_labels = order[:3]
     alias = {
@@ -1898,7 +1914,7 @@ def plot_fixed_umax_representative(
     n_cols = min(3, len(model_labels))
     # Column titles / Time (h) moderately enlarged; y-labels keep unit on second line.
     title_fs, xlabel_fs, label_fs, tick_fs, legend_fs = 22, 20, 14, 13, 13
-    fig, axes = plt.subplots(3, n_cols, figsize=(17.5, 11.4), sharex="col")
+    fig, axes = plt.subplots(3, n_cols, figsize=(17.5, 8.55), sharex="col")
     if n_cols == 1:
         axes = np.array(axes).reshape(3, 1)
     pathogen_colors = TRAJECTORY_PATHOGENS[:N_ODE_STRAINS]
@@ -1986,7 +2002,7 @@ def plot_fixed_umax_representative(
             bbox_to_anchor=(0.5, 0.0),
         )
     # Reserve bottom/top margins for enlarged Time (h) and column titles.
-    finalize_figure_layout(fig, rect=(0.08, 0.12, 0.99, 0.92), h_pad=3.8, w_pad=1.8)
+    finalize_figure_layout(fig, rect=(0.08, 0.10, 0.99, 0.95), h_pad=0.40, w_pad=1.8)
     assert_figure_artists_inside_canvas(fig, context="fixed_umax_representative")
     save_figure(fig, outpath)
     plt.close(fig)
@@ -2038,7 +2054,7 @@ def closed_loop_significance_pairs_from_bar_stats(
     srl_model: str,
     repeat_pairs_by_metric: Optional[Dict[str, List[Tuple[str, str, str]]]] = None,
 ) -> Dict[str, List[Tuple[str, str, str]]]:
-    """Gate repeat-level stars with non-overlapping aggregate bar CIs (Fig. 4B small-effect metrics)."""
+    """Gate repeat-level stars with non-overlapping aggregate bar CIs (study-local fixed-Umax summary)."""
     try:
         from closed_loop_eval import CLOSED_LOOP_METRIC_DIRECTION, CLOSED_LOOP_SIGNIFICANCE_CONTROLS
     except ImportError:
@@ -2193,7 +2209,7 @@ def closed_loop_significance_pairs_from_repeats(
 
 
 def _reorder_bar_plot_df(plot_df: pd.DataFrame, order: Optional[List[str]] = None) -> pd.DataFrame:
-    """Keep only models in manuscript order: TAR, RF, UniformTreeMean, Best tree."""
+    """Keep only models in manuscript order: TAR, RF, BestTree, UniformTreeMean."""
     order = order or list(MANUSCRIPT_BAR_MODEL_ORDER)
     available = plot_df["model"].tolist()
     ordered = [m for m in order if m in available]
@@ -2250,8 +2266,6 @@ def _plot_metric_panel_with_ci(
 
     bar_heights = y - bar_baseline if baseline_focus_bars else y
     if horizontal:
-        if significance_pairs:
-            raise ValueError("_plot_metric_panel_with_ci: horizontal bars do not support significance brackets")
         y_pos = x
         bars = ax.barh(
             y_pos,
@@ -2290,6 +2304,46 @@ def _plot_metric_panel_with_ci(
             span = max(data_right - data_left, 1e-9 * max(abs(data_right), 1.0))
             pad = ylim_pad_fraction * span
             ax.set_xlim(data_left - pad, data_right + pad)
+        if significance_pairs:
+            model_to_x = {model: idx for idx, model in enumerate(plot_df["model"])}
+            valid_pairs = [
+                (a, b, lbl)
+                for a, b, lbl in significance_pairs
+                if lbl not in {"ns", "na", ""} and a in model_to_x and b in model_to_x
+            ]
+            levels = _assign_significance_bracket_levels(valid_pairs, model_to_x)
+            xmin = float(np.nanmin(bar_bottoms)) if np.any(np.isfinite(bar_bottoms)) else 0.0
+            xmax = float(np.nanmax(bar_tops)) if np.any(np.isfinite(bar_tops)) else 0.0
+            xspan = _bracket_yspan(xmin, xmax)
+            bracket_padding = 0.10 * xspan
+            bracket_step = 0.16 * xspan * significance_bracket_step_scale
+            bracket_base = xmax + bracket_padding
+            max_bracket_right = xmax
+            tick_w = 0.035 * xspan
+            for (model_a, model_b, label), level in zip(valid_pairs, levels):
+                if level < 0:
+                    continue
+                y1, y2 = sorted([model_to_x[model_a], model_to_x[model_b]])
+                x_bracket = bracket_base + level * bracket_step
+                ax.plot(
+                    [x_bracket, x_bracket + tick_w, x_bracket + tick_w, x_bracket],
+                    [y1, y1, y2, y2],
+                    color="black",
+                    linewidth=1.0,
+                )
+                ax.text(
+                    x_bracket + tick_w + 0.012 * xspan,
+                    (y1 + y2) / 2.0,
+                    label,
+                    ha="left",
+                    va="center",
+                    fontsize=FS_SIG,
+                    fontweight="bold",
+                )
+                max_bracket_right = max(max_bracket_right, x_bracket + tick_w + 0.12 * xspan)
+            if valid_pairs:
+                cur_lo, cur_hi = ax.get_xlim()
+                ax.set_xlim(cur_lo, max(cur_hi, max_bracket_right + 0.04 * xspan))
         return
 
     bars = ax.bar(
@@ -2454,7 +2508,7 @@ def plot_fixed_umax_summary(
     model_order: Optional[List[str]] = None,
     outdir: Optional[str] = None,
 ) -> None:
-    """Fig. 4B: fixed-Umax forward ODE summary (point estimates; no repeat-level ODE CI)."""
+    """Study-local fixed-Umax forward ODE summary (point estimates; not a manuscript Fig. 4 panel)."""
     apply_matplotlib_style()
     if outdir:
         stats_df = _augment_closed_loop_plot_stats(stats_df, outdir)
@@ -3030,9 +3084,12 @@ def plot_umax_response_landscape(
     faint_line_alpha: float = 0.08,
     max_background_cases: int = 30,
     selected_umax_csv: Optional[str] = None,
+    selected_umax_values: Optional[np.ndarray] = None,
 ) -> None:
     """Fig. 5A: median composite-penalty landscape with IQR band and selected-Umax marker."""
     apply_matplotlib_style()
+    precomputed = dict(landscape_df.attrs.get("_precomputed_summary", {}) or {})
+    flag_rows = landscape_df.attrs.get("_flag_rows")
     work = _ensure_umax_unit_id(landscape_df.copy())
     if score_col is None or score_col not in work.columns:
         score_col = _resolve_landscape_score_col(work)
@@ -3040,11 +3097,9 @@ def plot_umax_response_landscape(
         return
 
     group_col = "unit_id" if "unit_id" in work.columns else None
-    flag_rows = work.attrs.get("_flag_rows")
     rug_source = flag_rows if isinstance(flag_rows, pd.DataFrame) and not flag_rows.empty else work
 
-    fig, ax = plt.subplots(figsize=(8.8, 5.8))
-    precomputed = work.attrs.get("_precomputed_summary", {})
+    fig, ax = plt.subplots(figsize=(8.8, 4.2))
     if group_col:
         unit_ids = work[group_col].drop_duplicates().tolist()
         if len(unit_ids) > max_background_cases:
@@ -3079,24 +3134,16 @@ def plot_umax_response_landscape(
             color=PALETTE_BLUE_LIGHT, alpha=0.10, zorder=2,
         )
 
-    selected_u = _extract_selected_umax_values(rug_source if isinstance(rug_source, pd.DataFrame) else work)
+    if selected_umax_values is not None:
+        selected_u = np.asarray(selected_umax_values, dtype=float)
+        selected_u = selected_u[np.isfinite(selected_u)]
+    else:
+        selected_u = _extract_selected_umax_values(rug_source if isinstance(rug_source, pd.DataFrame) else work)
     if selected_u.size:
         median_selected = float(np.median(selected_u))
         ax.axvline(
             median_selected, color=PALETTE_RED_MID, linestyle="--", linewidth=1.6,
             zorder=5, alpha=0.85, label="Selected Umax",
-        )
-        y0, y1 = ax.get_ylim()
-        yspan = y1 - y0 + 1e-9
-        # Keep rug marks above the x-axis spine so they do not collide with tick labels.
-        rug_y = y0 + 0.035 * yspan
-        ax.scatter(
-            selected_u, np.full(selected_u.size, rug_y),
-            marker="|", s=36, color=PALETTE_RED_MID, alpha=0.30, linewidths=0.8, zorder=6,
-        )
-        ax.text(
-            0.02, 0.12, f"median selected $U_{{max}}$ = {median_selected:.1f}",
-            transform=ax.transAxes, ha="left", va="bottom", fontsize=11, color=PALETTE_RED_MID,
         )
         if selected_umax_csv and isinstance(rug_source, pd.DataFrame):
             sel_flag = None
@@ -3117,12 +3164,37 @@ def plot_umax_response_landscape(
     ax.set_xlabel(r"$U_{max}$", fontsize=11)
     ax.set_ylabel("Composite penalty", fontsize=11)
     ax.tick_params(axis="both", labelsize=10.5)
-    ax.set_xlim(left=0)
+    ax.set_xlim(0.0, 100.0)
+    ax.set_ylim(0.0, 6.0)
+    if selected_u.size:
+        rug = selected_u
+        if rug.size > 2500:
+            rng = np.random.default_rng(42)
+            rug = rng.choice(rug, size=2500, replace=False)
+        ax.scatter(
+            rug, np.full(rug.size, 0.035 * 6.0),
+            marker="|", s=36, color=PALETTE_RED_MID, alpha=0.30, linewidths=0.8, zorder=6,
+        )
     ax.grid(axis="both", linestyle="--", alpha=0.3)
     handles, labels = ax.get_legend_handles_labels()
+    leg = None
     if handles:
-        ax.legend(handles, labels, loc="upper right", fontsize=10.5, frameon=False)
+        leg = ax.legend(handles, labels, loc="upper left", fontsize=10.5, frameon=False, bbox_to_anchor=(0.01, 0.98))
     finalize_figure_layout(fig)
+    if selected_u.size and leg is not None:
+        fig.canvas.draw()
+        bb = leg.get_window_extent(fig.canvas.get_renderer())
+        x_ax, y_ax = ax.transAxes.inverted().transform((bb.x0, bb.y0))
+        ax.text(
+            x_ax,
+            max(y_ax - 0.02, 0.02),
+            f"median selected $U_{{max}}$ = {float(np.median(selected_u)):.1f}",
+            transform=ax.transAxes,
+            ha="left",
+            va="top",
+            fontsize=11,
+            color=PALETTE_RED_MID,
+        )
     save_figure(fig, outpath)
     plt.close(fig)
 
@@ -3135,18 +3207,21 @@ def plot_umax_constraint_feasibility(
 ) -> None:
     """Fig. 5B: fraction of cases satisfying each constraint across candidate Umax."""
     apply_matplotlib_style()
+    precomputed = landscape_df.attrs.get("_precomputed_feasibility")
     work = _filter_tar_optimized_landscape(_ensure_umax_unit_id(landscape_df.copy()))
-    if work.empty or "candidate_u_max" not in work.columns:
-        return
-
-    summary = _constraint_feasibility_by_u(work)
+    if precomputed is not None:
+        summary = precomputed.copy() if isinstance(precomputed, pd.DataFrame) else pd.DataFrame(precomputed)
+    else:
+        if work.empty or "candidate_u_max" not in work.columns:
+            return
+        summary = _constraint_feasibility_by_u(work)
     if summary.empty:
         return
 
     if selected_umax_values is None:
         selected_umax_values = _extract_selected_umax_values(work)
 
-    fig, ax = plt.subplots(figsize=(8.8, 5.2))
+    fig, ax = plt.subplots(figsize=(8.8, 3.9))
     x = summary["candidate_u_max"].to_numpy(dtype=float)
     line_specs = [
         ("lr_fraction", "LR", PALETTE_BLUE_MID),
@@ -3172,10 +3247,10 @@ def plot_umax_constraint_feasibility(
     ax.set_xlabel(r"$U_{max}$", fontsize=11)
     ax.set_ylabel("Fraction of cases satisfying constraint", fontsize=11)
     ax.tick_params(axis="both", labelsize=10.5)
-    ax.set_xlim(left=0)
+    ax.set_xlim(0.0, 100.0)
     ax.set_ylim(0.0, 1.0)
     ax.grid(axis="both", linestyle="--", alpha=0.3)
-    ax.legend(loc="lower right", fontsize=10.5, frameon=False)
+    ax.legend(loc="lower right", fontsize=10.5, frameon=False, bbox_to_anchor=(0.84, 0.04))
     finalize_figure_layout(fig)
     save_figure(fig, outpath)
     plt.close(fig)
@@ -3669,8 +3744,8 @@ def plot_umax_ode_ablation(
     apply_matplotlib_style()
     n_cols = len(order)
     # Match fixed_umax_representative typography (titles / Time / y-labels).
-    title_fs, xlabel_fs, label_fs, tick_fs, legend_fs = 22, 20, 14, 13, 13
-    fig, axes = plt.subplots(3, n_cols, figsize=(17.5, 11.4), sharex=True)
+    title_fs, xlabel_fs, label_fs, tick_fs, legend_fs = 17, 20, 14, 13, 13
+    fig, axes = plt.subplots(3, n_cols, figsize=(17.5, 8.55), sharex=True)
     if n_cols == 1:
         axes = np.array(axes).reshape(3, 1)
     pathogen_colors = TRAJECTORY_PATHOGENS[:N_ODE_STRAINS]
@@ -3688,21 +3763,16 @@ def plot_umax_ode_ablation(
         times = sub["time_h"].to_numpy(dtype=float)
         all_times.append(times)
         t_thr = np.asarray(t_thr_by_condition[condition], dtype=float)
-        if display_labels is not None and col < len(display_labels):
-            title = display_labels[col]
+        prefix = FIG5_ODE_COLUMN_TITLES.get(
+            condition, FIG5_ABLATION_SHORT_LABELS.get(condition, _umax_ablation_display_label(condition))
+        )
+        umax_val = (policy_umax_by_condition or {}).get(condition)
+        if display_labels is not None and col < len(display_labels) and str(display_labels[col]).strip():
+            title = str(display_labels[col]).strip()
+        elif umax_val is not None and np.isfinite(umax_val):
+            title = f"{prefix} Umax = {umax_val:.1f}"
         else:
-            policy_label = FIG5_ODE_POLICY_SHORT_LABELS.get(
-                condition, _umax_ablation_display_label(condition)
-            )
-            metric_bits: List[str] = []
-            umax_val = (policy_umax_by_condition or {}).get(condition)
-            dose_val = (total_dosage_by_condition or {}).get(condition)
-            if umax_val is not None and np.isfinite(umax_val):
-                metric_bits.append(f"$U_{{max}}$={umax_val:.1f}")
-            if dose_val is not None and np.isfinite(dose_val):
-                metric_bits.append(f"dosage={dose_val:.0f}")
-            # At most two title lines: policy; optional Umax/dosage on the second line.
-            title = policy_label if not metric_bits else f"{policy_label}\n" + "; ".join(metric_bits)
+            title = prefix
         axes[0, col].plot(times, sub["C_ug_per_mL"], linewidth=1.8, color=TRAJECTORY_AMP)
         axes[0, col].set_title(title, fontsize=title_fs, pad=12)
         axes[0, col].tick_params(axis="both", labelsize=tick_fs)
@@ -3772,9 +3842,9 @@ def plot_umax_ode_ablation(
             loc="lower center",
             bbox_to_anchor=(0.5, 0.0),
         )
-        finalize_figure_layout(fig, rect=(0.08, 0.12, 0.99, 0.92), h_pad=3.8, w_pad=1.8)
+        finalize_figure_layout(fig, rect=(0.08, 0.10, 0.99, 0.95), h_pad=0.40, w_pad=1.8)
     else:
-        finalize_figure_layout(fig, rect=(0.08, 0.06, 0.99, 0.92), h_pad=3.8, w_pad=1.8)
+        finalize_figure_layout(fig, rect=(0.08, 0.06, 0.99, 0.95), h_pad=0.40, w_pad=1.8)
     fig.text(
         0.99, 0.985, "representative case",
         ha="right", va="top", fontsize=FS_NOTE, alpha=0.55, style="italic",
@@ -3863,12 +3933,14 @@ def plot_umax_summary_ablation(
         # Keep bar thickness readable: short height for few conditions, avoid tall empty space.
         fig_h = max(2.6, 0.62 * n_bars + 1.15) if n_panels <= 1 else max(3.2, 1.15 * n_bars + 1.0)
         fig_w = 6.6 if n_panels <= 1 else 3.6 * max(n_panels, 1)
+        if significance_pairs:
+            fig_w = 7.8 if n_panels <= 1 else fig_w + 0.9
         fig, axes = plt.subplots(1, max(n_panels, 1), figsize=(fig_w, fig_h))
     elif use_short_labels:
         # Manuscript source size: compact width/height without empty excess margins.
         fig, axes = plt.subplots(1, max(n_panels, 1), figsize=(15.5, 5.8))
     else:
-        fig, axes = plt.subplots(1, max(n_panels, 1), figsize=(3.4 * max(n_panels, 1), 5.2))
+        fig, axes = plt.subplots(1, max(n_panels, 1), figsize=(3.4 * max(n_panels, 1), 5.7))
     if n_panels == 1:
         axes = np.array([axes])
     significance_pairs_by_metric = significance_pairs if isinstance(significance_pairs, dict) else {}
@@ -3913,9 +3985,9 @@ def plot_umax_summary_ablation(
     if horizontal_bars:
         finalize_figure_layout(fig, rect=(0.08, 0.08, 0.98, 0.98))
     elif use_short_labels:
-        finalize_figure_layout(fig, rect=(0.04, 0.12, 0.99, 0.94), w_pad=1.6, h_pad=1.4)
+        finalize_figure_layout(fig, rect=(0.04, 0.12, 0.99, 0.92), w_pad=1.6, h_pad=1.4)
     else:
-        finalize_figure_layout(fig, rect=(0.0, 0.14, 1.0, 0.98))
+        finalize_figure_layout(fig, rect=(0.02, 0.14, 0.99, 0.92))
     assert_figure_artists_inside_canvas(fig, context="umax_summary_ablation")
     save_figure(fig, outpath)
     plt.close(fig)
@@ -3987,10 +4059,10 @@ def build_fig5_plot_manifest(
             "Manuscript Fig5.png = A: manually assembled Umax optimizer workflow; "
             "B: umax_constraint_feasibility.png; C: umax_score_landscape.png; "
             "D: umax_summary_ablation_composite_supplementary.png. "
-            "umax_ode_ablation.png + umax_summary_ablation.png are supp_fig2.png sources."
+            "umax_ode_ablation.png + umax_summary_ablation.png are supp_fig4.png sources."
         ),
         "manuscript_supplementary_composites": {
-            "supp_fig2.png": manuscript_composite_panel_records("supp_fig2.png"),
+            "supp_fig4.png": manuscript_composite_panel_records("supp_fig4.png"),
         },
         "prediction_input_sources": list(prediction_sources or []),
         "primary_outputs": {
@@ -4034,6 +4106,10 @@ def generate_umax_optimization_plots(outdir: str) -> Dict[str, str]:
         with open(manifest_path, encoding="utf-8") as fh:
             cl_manifest = json.load(fh)
     n_repeats = int(cl_manifest.get("n_repeats", 1))
+    n_repeats = max(n_repeats, int(cl_manifest.get("n_prediction_repeats", 1)))
+    repeat_dirs = glob.glob(os.path.join(outdir, "repeats", "repeat_*"))
+    if len(repeat_dirs) > n_repeats:
+        n_repeats = len(repeat_dirs)
     outputs: Dict[str, str] = {}
     primary_outputs: Dict[str, str] = {}
     sampled_units = _sample_umax_unit_ids_from_outdir(outdir, max_units=30, seed=42)
@@ -4184,7 +4260,7 @@ def generate_umax_optimization_plots(outdir: str) -> Dict[str, str]:
             policy_umax_by_condition=policy_umax,
             total_dosage_by_condition=total_dosage_by_condition or None,
         )
-        # supp_fig2.png panel A (not manuscript Fig5.png).
+        # supp_fig4.png panel A (not manuscript Fig5.png).
         outputs["umax_ode_ablation.png"] = ablation_png
 
     stats_path = os.path.join(outdir, "umax_ablation_repeated_plot_stats.csv")
@@ -4214,13 +4290,24 @@ def generate_umax_optimization_plots(outdir: str) -> Dict[str, str]:
             significance_pairs=sig_pairs if sig_pairs else None, outdir=outdir,
             use_short_labels=True,
         )
-        # supp_fig2.png panel B (not manuscript Fig5.png).
+        # supp_fig4.png panel B (not manuscript Fig5.png).
         outputs["umax_summary_ablation.png"] = summary_png
         composite_supp_png = os.path.join(figure_dir, "umax_summary_ablation_composite_supplementary.png")
         if "mean_composite_score" in stats_df.columns:
+            composite_sig = None
+            if significance_for_manuscript:
+                try:
+                    from closed_loop_eval import FIG5_SIGNIFICANCE_REFERENCE as composite_ref
+                except ImportError:
+                    composite_ref = "TAR_optimized"
+                composite_pairs = closed_loop_significance_pairs_for_plot(
+                    annotations_df, composite_ref, metric="mean_composite_score"
+                )
+                if composite_pairs:
+                    composite_sig = {"mean_composite_score": composite_pairs}
             plot_umax_summary_ablation(
                 stats_df, composite_supp_png, n_repeats=n_repeats,
-                significance_pairs=None, outdir=outdir,
+                significance_pairs=composite_sig, outdir=outdir,
                 metric_specs=[("mean_composite_score", "Composite penalty score")],
                 use_short_labels=True,
                 horizontal_bars=True,
@@ -4237,7 +4324,7 @@ def generate_umax_optimization_plots(outdir: str) -> Dict[str, str]:
                 conditions_order=list(FIG5_SECONDARY_SUMMARY_CONDITIONS),
             )
             outputs["umax_summary_ablation_with_rf.png"] = rf_summary_png
-        except ImportError:
+        except Exception:
             pass
 
     plot_body = build_fig5_plot_manifest(
@@ -4399,7 +4486,7 @@ def build_fig3_plot_manifest(
         "manuscript_source_mapping": {
             k: dict(v)
             for k, v in MANUSCRIPT_SOURCE_MAPPING.items()
-            if v.get("manuscript_composite") in {"Fig3.png", "supp_fig1.png"}
+            if v.get("manuscript_composite") in {"Fig3.png", "supp_fig2.png"}
             or k in supplementary_outputs
             or k in primary_outputs
         },
@@ -4418,7 +4505,7 @@ def build_fig3_plot_manifest(
                 "Fig3.png panel D: auxiliary uncertainty fraction by target"
             ),
             "uncertainty_decomposition.png": (
-                "supp_fig1.png: aleatoric vs epistemic std (4×3 layout; pooled and per Tthr)"
+                "supp_fig2.png: aleatoric vs epistemic std (4×3 layout; pooled and per Tthr)"
             ),
             "prediction_error_heatmap.png": (
                 "diagnostic only (not a current main-manuscript panel): RMSE original scale per target"
@@ -4738,6 +4825,15 @@ def generate_ode_back_plots(outdir: str, config: Optional[dict] = None) -> Dict[
         plot_ode_back_pred_vs_ref_scatter(case_df, scatter_path, model_order=model_order)
         outputs["ode_back_pred_vs_ref_scatter.png"] = scatter_path
 
+    direct_summary_path = os.path.join(outdir, "direct_threshold_summary.csv")
+    if os.path.isfile(direct_summary_path):
+        from ode_back_validation import DIRECT_COMPARISON_PNG, plot_direct_threshold_comparison
+
+        direct_png = os.path.join(outdir, DIRECT_COMPARISON_PNG)
+        png_path, svg_path = plot_direct_threshold_comparison(pd.read_csv(direct_summary_path), direct_png)
+        outputs["direct_threshold_comparison.png"] = png_path
+        outputs["direct_threshold_comparison.svg"] = svg_path
+
     manifest_path = os.path.join(outdir, ODE_BACK_MANIFEST_JSON)
     if os.path.isfile(manifest_path):
         with open(manifest_path, encoding="utf-8") as fh:
@@ -4749,11 +4845,12 @@ def generate_ode_back_plots(outdir: str, config: Optional[dict] = None) -> Dict[
                 "repeated ODE-back functional R2 with 95% CI; formal stars from "
                 "Nadeau–Bengio corrected resampled t-tests + Holm-adjusted p "
                 "(Wilcoxon/permutation retained as sensitivity only); "
-                "BestSingleTree shown as Best tree (oracle) without formal TAR stars"
+                "BestSingleTree/BestTree is an oracle diagnostic and is omitted from plot brackets"
             ),
         }
         ob_manifest["manuscript_source_mapping"] = {
             "ode_back_r2_barplot.png": dict(MANUSCRIPT_SOURCE_MAPPING["ode_back_r2_barplot.png"]),
+            "direct_threshold_comparison.png": dict(MANUSCRIPT_SOURCE_MAPPING["direct_threshold_comparison.png"]),
         }
         write_json_manifest(outdir, ODE_BACK_MANIFEST_JSON, ob_manifest)
 
@@ -4876,7 +4973,7 @@ def generate_benchmark_plots(outdir: str, config: Optional[dict] = None) -> Dict
         per_target_df,
         main_path,
         summary_metric_col="mean_R2_original",
-        summary_ylabel="Mean target-wise R square\n(original scale)",
+        summary_ylabel="Mean target-wise R square",
         summary_title="Mean target-wise R square",
         heatmap_value_col="R2_original",
         heatmap_cbar_label="$R^2$ (original scale)",
@@ -4919,7 +5016,7 @@ def generate_benchmark_plots(outdir: str, config: Optional[dict] = None) -> Dict
             unc_path,
             method=str(config.get("uncertainty_method", "mc_dropout")),
         )
-        # Full scatter panel is supp_fig1.png; by-target bars are Fig3.png panel D.
+        # Full scatter panel is supp_fig2.png; by-target bars are Fig3.png panel D.
         supplementary_outputs["uncertainty_decomposition.png"] = unc_path
         outputs["uncertainty_decomposition.png"] = unc_path
         by_target_path = os.path.join(figure_dir, "uncertainty_decomposition_by_target.png")
@@ -5065,7 +5162,7 @@ def generate_ode_plots(outdir: str) -> Dict[str, str]:
 
 
 def generate_fig4_plots(outdir: str) -> Dict[str, str]:
-    """Regenerate Fig. 4 fixed-Umax validation panels."""
+    """Regenerate fixed-Umax validation figures (manuscript Fig. 4b is the representative panel)."""
     figure_dir = _ensure_figure_dir(outdir)
     manifest_path = os.path.join(outdir, FIG4_MANIFEST_JSON)
     plot_manifest_path = os.path.join(outdir, FIG4_PLOT_MANIFEST_JSON)
@@ -5648,14 +5745,14 @@ def build_expected_artifacts(
         ),
         ExpectedArtifact(
             os.path.join(umax_optimization_figures, "umax_ode_ablation.png"),
-            "supp_fig2.png panel A — illustrative ODE ablation trajectories",
+            "supp_fig4.png panel A — illustrative ODE ablation trajectories",
             umax_optimization_cmd,
             "umax_optimization",
             optional=True,
         ),
         ExpectedArtifact(
             os.path.join(umax_optimization_figures, "umax_summary_ablation.png"),
-            "supp_fig2.png panel B — TAR-only Umax policy ablation summary",
+            "supp_fig4.png panel B — TAR-only Umax policy ablation summary",
             umax_optimization_cmd,
             "umax_optimization",
             optional=True,

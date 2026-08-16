@@ -53,7 +53,7 @@ DIRECT_RULE_MODELS = (DIRECT_RULE_UNCLIPPED, DIRECT_RULE_CLIPPED)
 DIRECT_DISPLAY_NAMES = {
     TAR_MODEL: "TAR",
     DIRECT_RULE_UNCLIPPED: "Direct",
-    DIRECT_RULE_CLIPPED: "Direct (clipped)",
+    DIRECT_RULE_CLIPPED: "Direct\n(clipped)",
 }
 DIRECT_MODEL_PLOT_ORDER = (TAR_MODEL, DIRECT_RULE_UNCLIPPED, DIRECT_RULE_CLIPPED)
 DIRECT_CASE_RESULTS_CSV = "direct_threshold_case_results.csv"
@@ -1642,12 +1642,17 @@ def run_ode_back_validation(
             "t_end": float(PAPER_FIGURE_PROFILE.t_end),
             "dt": float(PAPER_FIGURE_PROFILE.dt),
             "dt_detect": float(PAPER_FIGURE_PROFILE.dt_detect),
+            "dt_detect_note": (
+                "Legacy nominal field (1/6 h). Implemented trajectories evaluate the "
+                "threshold condition once per 0.4-h forward-Euler integration step; "
+                "dt_detect is not separately resolved and is not a 10-min sensing trace."
+            ),
         },
         "prediction_files": [os.path.relpath(p, outdir) for p in pred_paths],
-        "fig3_panel_notes": {
+        "fig4_panel_notes": {
             "Fig3B": "Direct Tthr prediction R2 (tree_srl_benchmark).",
             "Fig3C": "Direct Tthr prediction error heatmap.",
-            "Fig3D": "ODE-back functional outcome R2 / heatmap; fixed non-optimized Umax.",
+            "Fig4A": "ODE-back functional outcome R2 (ode_back_r2_barplot.png); fixed non-optimized Umax.",
         },
         "has_desired_terminal_pathogen": has_desired_pathogen,
         "trajectory_r2_enabled": bool(compute_trajectory_r2),

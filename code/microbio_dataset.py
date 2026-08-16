@@ -85,6 +85,10 @@ def microbio_generation_provenance_fields() -> Dict[str, object]:
         "gamma_P_mL_ug_inv_h_inv": float(profile.gamma_P),
         "lambda_amp_h_inv": float(profile.lambda_amp),
         "dt_detect_h_nominal": float(profile.dt_detect),
+        "dt_detect_note": (
+            "Legacy nominal field (1/6 h). Trajectories evaluate the threshold "
+            "once per 0.4-h forward-Euler step; dt_detect is not a 10-min sensing trace."
+        ),
         "dt_h_euler": float(profile.dt),
         "u_max_rep_ug_per_mL": float(profile.u_max_rep),
         "calibration_limitation": (
@@ -327,8 +331,8 @@ def build_ode_profile_parameters_df() -> pd.DataFrame:
             profile.dt_detect,
             "h",
             "model_assumption",
-            "controller sampling",
-            "Nominal detection interval",
+            "legacy nominal (not 10-min sensing)",
+            "Legacy nominal detection interval (1/6 h); not separately resolved by the fixed 0.4-h Euler step, which evaluates the threshold once per integration step.",
         ),
         (
             "simulation horizon",

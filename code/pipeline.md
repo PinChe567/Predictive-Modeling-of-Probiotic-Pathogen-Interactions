@@ -46,7 +46,7 @@ Phase B — Relabel + hyperparameter selection (choose one; see step 2)
 Phase C — Formal evaluation (Stage 1)
  3. Heatmap                        → results\heatmap\
  4. Representative ODE             → results\ode\
- 4b. Morris μ sensitivity (opt.)   → results\mu_sensitivity\
+ 4b. Morris μ sensitivity (supp.)  → results\mu_sensitivity\
  5. Benchmark + uncertainty        → results\tree_srl_benchmark\
  5b. Umax weight sensitivity (opt.) → results\screening\umax_weights\
  6. ODE-back validation             → results\ode_back_validation\
@@ -80,7 +80,7 @@ Phase C — Formal evaluation (Stage 1)
 | File                             | Role                                                                                                                               |
 | -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
 | `microbio_dataset.py`            | Steps 1–2: data generation, Tthr relabel bundle; **Stage-0 screening** (`run_parameter_screening_pipeline`)                        |
-| `multi_pathogen_simulator.py`    | Step 4: representative ODE trajectories; **step 4b** Morris μ sensitivity (`--mode mu_sensitivity`)                               |
+| `multi_pathogen_simulator.py`    | Step 4: representative ODE trajectories; **step 4b** Morris μ sensitivity (`--mode mu_sensitivity`; Supplementary Fig. S1) |
 | `simulate_case_metrics_fast.py`  | Metrics-only ODE (internal fast path for steps 6 / 8 / 10)                                                                         |
 | `heatmap.py`                     | Step 3: correlation heatmaps                                                                                                       |
 | `tree_srl_benchmark.py`          | Step 5: TAR benchmark (candidate-score alignment, uncertainty decomposition); training screening                                   |
@@ -135,7 +135,9 @@ python .\microbio_dataset.py `
 
 **Outputs:** `data\microbio_raw\MICROBIO.csv`, `ode_profile_parameters.csv`, `ode_parameter_sources.csv`, `microbio_generation_summary.json`
 
-**ODE profile:** `experimental_calibrated` (E. coli / L. lactis growth-curve calibration; pathogen `gamma_s=0.0046`, probiotic `gamma_P=0.0015` preliminary estimate).
+**ODE profile:** `paper_figure` from `_default_ode_profile()` (aliases: `manuscript_strict`, `experimental_calibrated`). Pathogen killing-rate vector `gamma_s_rep = [0.035, 0.032, 0.038, 0.030, 0.036]`, probiotic `gamma_P = 0.018`, representative `u_max_rep = 18` µg/mL.
+
+**Dataset size:** `microbio_dataset.py` generates the formal 352,000-row manuscript workflow. `multi_pathogen_simulator.py --n_bio=500` is a separate legacy 220,000-row helper grid and is not the manuscript dataset generator.
 
 **Note:** Stage 0 and all later steps depend on this raw library. If missing, parameter screening raises `FileNotFoundError`. If you generated the raw CSV with an old ODE profile, delete `data\microbio_raw\` and re-run step 1.
 
@@ -222,11 +224,13 @@ python .\figure_audit.py --mode generate_plots --groups ode --ode_outdir .\resul
 
 **Outputs:** trajectory CSV, manifest, `representative_paper_figure.png` + `.svg`
 
+**Note:** Implemented trajectories evaluate the threshold condition once per 0.4-h forward-Euler integration step. Profile `dt_detect = 1/6` h is a legacy nominal field and is not separately resolved; results are not 10-min sensing traces.
+
 ---
 
-## 4b — Morris μ sensitivity (optional; development only)
+## 4b — Morris μ sensitivity (supplementary post hoc analysis)
 
-**When:** after **step 4** (or anytime the ODE profile is available). Does **not** regenerate the supervised dataset and does **not** train any ML model. Not required for the manuscript mainline (steps 5–11).
+**When:** after **step 4** (or anytime the ODE profile is available). Does **not** regenerate the supervised dataset and does **not** retrain TAR. Not required for the manuscript mainline (steps 5–11). The figure `mu_morris_summary.png` is Supplementary Fig. S1.
 
 **Goal:** SALib Morris elementary-effects analysis over the **31** raw-library factors (B0, k, γ_S, ρ, μ, Umax, Tthr), using formal raw-library bounds and `simulate_case`. Relative μ*/σ and ranks are always taken **among all 31 factors**. Summary heatmaps show only μ₁–μ₅.
 
@@ -359,7 +363,7 @@ python .\ode_back_validation.py `
 
 **Outputs:** `ode_back_summary_by_model.csv`, `ode_back_per_outcome_metrics.csv`, `figure\ode_back_outcome_heatmap.png` + `.svg`; with `--include_direct_threshold_baseline` also `direct_threshold_case_results.csv`, `direct_threshold_summary.csv`, `direct_threshold_support_audit.csv`, `direct_threshold_comparison.png` + `.svg`
 
-**Note:** No retraining; no Umax optimization; requires step 5. Direct-threshold baselines (`DirectRuleUnclipped` / `DirectRuleClipped`) use `Tthr_i = B0_i * 10**(-LR_i_target)` on the same held-out rows as TAR.
+**Note:** No retraining; no Umax optimization; requires step 5. Direct-threshold baselines (`DirectRuleUnclipped` / `DirectRuleClipped`) use `Tthr_i = B0_i * 10**(-LR_i_target)` on the same held-out rows as TAR. `direct_threshold_comparison.png` is Supplementary Fig. S3. `ode_back_r2_barplot.png` is manuscript Fig. 4a (not Fig. 3).
 
 ---
 
@@ -380,7 +384,7 @@ python .\figure_audit.py --mode generate_plots --groups benchmark --benchmark_ou
 
 **Outputs:** `results\tree_srl_benchmark\figure\` (PNG + SVG). Panel A is **not** auto-rendered.
 
-**Note:** `n_repeats >= 10` for formal significance stars. `prediction_error_heatmap.png` and `ode_back_outcome_heatmap.png` are diagnostic only and are **not** current main-manuscript panels.
+**Note:** `n_repeats >= 10` for formal significance stars. BestTree is an oracle diagnostic and never receives a formal significance bracket. `uncertainty_decomposition.png` is Supplementary Fig. S2. `prediction_error_heatmap.png` and `ode_back_outcome_heatmap.png` are diagnostic only and are **not** current main-manuscript panels.
 
 ---
 
@@ -515,7 +519,7 @@ python .\figure_audit.py --mode generate_plots --groups umax_optimization --umax
 
 Also regenerated (not main-manuscript panels):
 
-- `umax_ode_ablation` + `umax_summary_ablation` → **supp_fig2.png** sources
+- `umax_ode_ablation` + `umax_summary_ablation` → **supp_fig4.png** sources
 - `umax_score_components_landscape`, `umax_objective_alignment`, `umax_summary_ablation_with_rf` — study-local diagnostics
 
 ---
@@ -538,11 +542,11 @@ Exact assembled-figure sources (manual panels are not code-rendered):
 | `Fig5.png` | B | `umax_constraint_feasibility.png` |
 | `Fig5.png` | C | `umax_score_landscape.png` |
 | `Fig5.png` | D | `umax_summary_ablation_composite_supplementary.png` |
-| `supp_fig1.png` | — | `uncertainty_decomposition.png` |
-| `supp_fig2.png` | A | `umax_ode_ablation.png` |
-| `supp_fig2.png` | B | `umax_summary_ablation.png` |
+| `supp_fig1.png` | — | `mu_morris_summary.png` |
+| `supp_fig2.png` | — | `uncertainty_decomposition.png` |
 | `supp_fig3.png` | — | `direct_threshold_comparison.png` |
-| `supp_fig4.png` | — | `mu_morris_summary.png` |
+| `supp_fig4.png` | A | `umax_ode_ablation.png` |
+| `supp_fig4.png` | B | `umax_summary_ablation.png` |
 
 `prediction_error_heatmap.png` and `ode_back_outcome_heatmap.png` remain available as diagnostics but are **not** current main-manuscript panels. Study-local `FIXED_UMAX_STUDY_PANEL_ORDER` / `UMAX_OPTIMIZATION_STUDY_PANEL_ORDER` inventories must not be read as the manuscript composite order above.
 
@@ -561,7 +565,7 @@ Each generated figure is written as **both** `.png` (300 dpi) and `.svg` (vector
 
 - Manuscript `Fig4.png` panel A is ODE-back `ode_back_r2_barplot.png` (step 6)
 - Manuscript `Fig4.png` panel B is fixed-Umax `fixed_umax_representative.png` (step 8/9)
-- Fixed-Umax step reads per-repeat Tthr predictions from step 5; aggregates one median Tthr per model
+- Fixed-Umax uses `paper_figure` biological parameters, fixed Umax = 18 µg/mL, and model-specific thresholds aggregated as the median of per-split medians
 - Runs paper_figure + fixed Umax 18 µg/mL forward ODE once per model (TAR / BestTree / UniformTreeMean) — **3 ODE runs total**
 - Reading predictions does **not** run ODE per test row
 
@@ -604,7 +608,7 @@ Development-only records, **not** Fig. 3–5. Old `parameter_screening_summary.p
 | 5D | `umax_summary_ablation_composite_supplementary.png` — composite-penalty policy ablation |
 
 
-**Supplementary related to Fig. 5:** `supp_fig2.png` = `umax_ode_ablation.png` + `umax_summary_ablation.png`.
+**Supplementary related to Fig. 5:** `supp_fig4.png` = `umax_ode_ablation.png` + `umax_summary_ablation.png`.
 
 **References:** P_AUC / LR use metadata `desired_*`; dose reference from training-only q90; fixed Umax policies from training rows only (per repeat; validation held out). **Primary optimizer (manuscript):** `feasible_first` — lowest-dosage feasible Umax on the grid, else lowest composite-penalty fallback. `aspiration_then_pareto` is sensitivity-only (`umax_selection_policy_sensitivity.csv`). Umax is **not** a supervised ML target. `--backend auto` uses Numba for u_grid; `--n_jobs` parallelizes repeats.
 
