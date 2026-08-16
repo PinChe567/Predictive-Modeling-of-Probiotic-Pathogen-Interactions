@@ -2,7 +2,7 @@
 
 This repository provides the **source code**, **parameter-analysis plan**, and **raw experimental data** used in the study, “Predictive Modeling of Probiotic–Pathogen Interactions Under Threshold-Triggered Antimicrobial Peptide Control.”
 
-> **Repository scope:** GitHub intentionally contains only the code, parameter-analysis plan, and experimental data. The generated simulation database and final analysis results are archived separately on Zenodo: **[INSERT ZENODO DOI OR URL]**.
+> **Repository scope:** GitHub intentionally contains only the code, parameter-analysis plan, and experimental data. The generated simulation database and final analysis results are archived separately on Zenodo: 10.5281/zenodo.21961676.
 
 ---
 ## 💻 Parameter Analysis
