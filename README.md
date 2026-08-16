@@ -73,4 +73,4 @@ The generated database and final analysis results are deposited on Zenodo as:
 * **`formal_datasets.zip`**: The complete code-generated `data/` directory.
 * **`predictions_and_results.zip`**: The complete code-generated `results/` directory, including saved predictions, numerical result tables, manifests, and CSV/PNG/SVG figure outputs.
 
-Zenodo: **[INSERT ZENODO DOI OR URL]**
+Zenodo: 10.5281/zenodo.21961676
