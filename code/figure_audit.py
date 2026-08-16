@@ -500,6 +500,16 @@ MANUSCRIPT_FIG5_CODE_GENERATED_SOURCES: Tuple[str, ...] = (
     "umax_summary_ablation_composite_supplementary.png",
 )
 
+# Fig.5.png source panels never draw inferential brackets/stars (descriptive bars/CIs only).
+FIG5_MANUSCRIPT_DRAW_INFERENTIAL_ANNOTATIONS = False
+
+
+def fig5_manuscript_summary_significance_pairs(*_args, **_kwargs):
+    """Manuscript Fig.5.png panel D: never return inferential pairs for plotting."""
+    del _args, _kwargs
+    return None
+
+
 FIG5_MAIN_SUMMARY_METRICS: Tuple[Tuple[str, str], ...] = (
     ("mean_total_dosage", "Total dosage"),
     ("mean_P_AUC", r"$P_{AUC}$"),
@@ -1260,7 +1270,7 @@ def plot_model_metric_combined_panel(
     top_levels = _pair_levels(significance_pairs)
     bot_levels = _pair_levels(rmse_significance_pairs)
     # Extra height/left room: large titles must clear stars and tick numbers.
-    fig_h = 0.75 * (11.4 + 1.25 * (max(top_levels, 0) + max(bot_levels, 0) + 2))
+    fig_h = (5.0 / 4.0) * 0.75 * (11.4 + 1.25 * (max(top_levels, 0) + max(bot_levels, 0) + 2))
     fig, axes = plt.subplots(2, 1, figsize=(9.2, fig_h), sharex=True)
 
     r2_title = "Mean target-wise R square"
@@ -2659,6 +2669,44 @@ def _resolve_landscape_score_col(df: pd.DataFrame) -> str:
     return ""
 
 
+OFFICIAL_UMAX_GRID_MAX = 101.0
+
+
+def candidate_umax_display_xlim(candidate_u_max) -> Tuple[float, float]:
+    """X-axis range from saved candidate_u_max. Official grid is 0–101 inclusive; never clip at 100."""
+    x = np.asarray(candidate_u_max, dtype=float)
+    x = x[np.isfinite(x)]
+    if x.size == 0:
+        return (0.0, OFFICIAL_UMAX_GRID_MAX)
+    xmin = float(np.min(x))
+    xmax = float(np.max(x))
+    left = min(0.0, xmin)
+    if xmax >= 100.0:
+        right = max(xmax, OFFICIAL_UMAX_GRID_MAX)
+    else:
+        right = xmax
+    if right <= left:
+        right = left + OFFICIAL_UMAX_GRID_MAX
+    return (left, right)
+
+
+def apply_candidate_umax_xlim(ax, candidate_u_max) -> None:
+    """Lock x-axis to saved candidate_u_max range without autoscale margin that invents a 120 tick."""
+    left, right = candidate_umax_display_xlim(candidate_u_max)
+    ax.margins(x=0.0)
+    ax.set_autoscalex_on(False)
+    ax.set_xlim(left, right)
+    ticks = [0.0, 20.0, 40.0, 60.0, 80.0]
+    if right >= 101.0 - 1e-9:
+        ticks.append(101.0)
+    elif right >= 100.0 - 1e-9:
+        ticks.append(100.0)
+    ax.set_xticks([t for t in ticks if left - 1e-9 <= t <= right + 1e-9])
+    for tick_label in ax.get_xticklabels():
+        if tick_label.get_text() == "101":
+            tick_label.set_horizontalalignment("right")
+
+
 def _aggregate_penalty_landscape_summary(df: pd.DataFrame, score_col: str) -> pd.DataFrame:
     return (
         df.groupby("candidate_u_max", as_index=False)[score_col]
@@ -3164,7 +3212,6 @@ def plot_umax_response_landscape(
     ax.set_xlabel(r"$U_{max}$", fontsize=11)
     ax.set_ylabel("Composite penalty", fontsize=11)
     ax.tick_params(axis="both", labelsize=10.5)
-    ax.set_xlim(0.0, 100.0)
     ax.set_ylim(0.0, 6.0)
     if selected_u.size:
         rug = selected_u
@@ -3175,6 +3222,7 @@ def plot_umax_response_landscape(
             rug, np.full(rug.size, 0.035 * 6.0),
             marker="|", s=36, color=PALETTE_RED_MID, alpha=0.30, linewidths=0.8, zorder=6,
         )
+    apply_candidate_umax_xlim(ax, x)
     ax.grid(axis="both", linestyle="--", alpha=0.3)
     handles, labels = ax.get_legend_handles_labels()
     leg = None
@@ -3195,6 +3243,8 @@ def plot_umax_response_landscape(
             fontsize=11,
             color=PALETTE_RED_MID,
         )
+    apply_candidate_umax_xlim(ax, x)
+    assert_figure_artists_inside_canvas(fig, context="umax_score_landscape")
     save_figure(fig, outpath)
     plt.close(fig)
 
@@ -3247,11 +3297,14 @@ def plot_umax_constraint_feasibility(
     ax.set_xlabel(r"$U_{max}$", fontsize=11)
     ax.set_ylabel("Fraction of cases satisfying constraint", fontsize=11)
     ax.tick_params(axis="both", labelsize=10.5)
-    ax.set_xlim(0.0, 100.0)
     ax.set_ylim(0.0, 1.0)
+    apply_candidate_umax_xlim(ax, x)
     ax.grid(axis="both", linestyle="--", alpha=0.3)
     ax.legend(loc="lower right", fontsize=10.5, frameon=False, bbox_to_anchor=(0.84, 0.04))
+    apply_candidate_umax_xlim(ax, x)
     finalize_figure_layout(fig)
+    apply_candidate_umax_xlim(ax, x)
+    assert_figure_artists_inside_canvas(fig, context="umax_constraint_feasibility")
     save_figure(fig, outpath)
     plt.close(fig)
 
@@ -3932,9 +3985,10 @@ def plot_umax_summary_ablation(
         n_bars = len(plot_df)
         # Keep bar thickness readable: short height for few conditions, avoid tall empty space.
         fig_h = max(2.6, 0.62 * n_bars + 1.15) if n_panels <= 1 else max(3.2, 1.15 * n_bars + 1.0)
-        fig_w = 6.6 if n_panels <= 1 else 3.6 * max(n_panels, 1)
-        if significance_pairs:
-            fig_w = 7.8 if n_panels <= 1 else fig_w + 0.9
+        # Keep right-edge room for CI whiskers and tick labels even without brackets.
+        fig_w = 7.8 if n_panels <= 1 else 3.6 * max(n_panels, 1)
+        if significance_pairs and n_panels > 1:
+            fig_w = fig_w + 0.9
         fig, axes = plt.subplots(1, max(n_panels, 1), figsize=(fig_w, fig_h))
     elif use_short_labels:
         # Manuscript source size: compact width/height without empty excess margins.
@@ -3983,7 +4037,11 @@ def plot_umax_summary_ablation(
     for ax in axes[panel_idx:]:
         ax.set_visible(False)
     if horizontal_bars:
-        finalize_figure_layout(fig, rect=(0.08, 0.08, 0.98, 0.98))
+        for ax in axes[:panel_idx]:
+            lo, hi = ax.get_xlim()
+            span = max(hi - lo, 1e-12)
+            ax.set_xlim(lo, hi + 0.10 * span)
+        finalize_figure_layout(fig, rect=(0.10, 0.14, 0.92, 0.96))
     elif use_short_labels:
         finalize_figure_layout(fig, rect=(0.04, 0.12, 0.99, 0.92), w_pad=1.6, h_pad=1.4)
     else:
@@ -4091,6 +4149,9 @@ def build_fig5_plot_manifest(
         "exploratory": bool(n_repeats < 10),
         "manuscript_safe": bool(n_repeats >= 100 and significance_for_manuscript),
         "illustrative_only_ablation_trajectories": True,
+        "fig5_manuscript_inferential_annotations": bool(
+            FIG5_MANUSCRIPT_DRAW_INFERENTIAL_ANNOTATIONS
+        ),
     }
 
 
@@ -4294,17 +4355,11 @@ def generate_umax_optimization_plots(outdir: str) -> Dict[str, str]:
         outputs["umax_summary_ablation.png"] = summary_png
         composite_supp_png = os.path.join(figure_dir, "umax_summary_ablation_composite_supplementary.png")
         if "mean_composite_score" in stats_df.columns:
-            composite_sig = None
-            if significance_for_manuscript:
-                try:
-                    from closed_loop_eval import FIG5_SIGNIFICANCE_REFERENCE as composite_ref
-                except ImportError:
-                    composite_ref = "TAR_optimized"
-                composite_pairs = closed_loop_significance_pairs_for_plot(
-                    annotations_df, composite_ref, metric="mean_composite_score"
-                )
-                if composite_pairs:
-                    composite_sig = {"mean_composite_score": composite_pairs}
+            composite_sig = fig5_manuscript_summary_significance_pairs(
+                annotations_df,
+                significance_for_manuscript=significance_for_manuscript,
+                enabled=FIG5_MANUSCRIPT_DRAW_INFERENTIAL_ANNOTATIONS,
+            )
             plot_umax_summary_ablation(
                 stats_df, composite_supp_png, n_repeats=n_repeats,
                 significance_pairs=composite_sig, outdir=outdir,

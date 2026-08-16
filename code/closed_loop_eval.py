@@ -871,9 +871,28 @@ def resolve_weights_from_profile(
     return presets[profile]
 
 
+FORMAL_U_GRID_SPEC = "arange:0:101:1"
+U_GRID_ARANGE_HELP = (
+    "Umax candidate grid. Custom arange:start:stop:step is STOP-INCLUSIVE "
+    "(arange:0:101:1 → 0, 1, ..., 101; 102 points). "
+    "This is not NumPy np.arange, whose stop is exclusive; the matching NumPy "
+    "form is np.arange(0, 102, 1, dtype=float)."
+)
+
+
+def formal_u_grid() -> np.ndarray:
+    """Manuscript-formal Umax candidates: 0, 1, ..., 101 (102 points).
+
+    NumPy ``arange`` stop is exclusive, so the factory uses ``np.arange(0, 102, 1)``.
+    That matches ``parse_u_grid('arange:0:101:1')`` and the official YAML spec,
+    whose custom stop is inclusive.
+    """
+    return np.arange(0, 102, 1, dtype=float)
+
+
 @dataclass
 class ClosedLoopConfig:
-    u_grid: np.ndarray = field(default_factory=lambda: np.arange(0, 101, 1, dtype=float))
+    u_grid: np.ndarray = field(default_factory=formal_u_grid)
     weights: ClosedLoopWeights = field(default_factory=ClosedLoopWeights)
     pathogen_ceiling_cfu_per_mL: float = 4.0e7
     pathogen_floor_cfu_per_mL: float = 1.0e7
@@ -955,6 +974,14 @@ HARD_VIOLATION_TOL_REL = 0.01
 
 
 def parse_u_grid(spec: str) -> np.ndarray:
+    """Parse a Umax candidate-grid specification.
+
+    Custom ``arange:start:stop:step`` is **stop-inclusive**. The formal
+    manuscript grid ``arange:0:101:1`` is therefore ``0, 1, ..., 101``
+    (102 points, step 1). This is **not** NumPy ``np.arange``, whose
+    ``stop`` is exclusive (``np.arange(0, 101, 1)`` ends at 100). The
+    equivalent NumPy call is ``np.arange(0, 102, 1, dtype=float)``.
+    """
     if spec.startswith("arange:"):
         parts = spec.split(":")
         if len(parts) != 4:
@@ -5410,7 +5437,7 @@ def main() -> None:
         help="Single-split wide predictions CSV (alternative to --predictions_dir).",
     )
     parser.add_argument("--outdir", default="results/fixed_umax_validation")
-    parser.add_argument("--u_grid", default="arange:0:101:1")
+    parser.add_argument("--u_grid", default=FORMAL_U_GRID_SPEC, help=U_GRID_ARANGE_HELP)
     parser.add_argument("--pathogen_ceiling", type=float, default=4.0e7)
     parser.add_argument("--pathogen_floor", type=float, default=1.0e7)
     parser.add_argument("--dosage_reference_target", type=float, default=2500.0)

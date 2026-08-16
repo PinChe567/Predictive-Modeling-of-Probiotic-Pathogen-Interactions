@@ -398,6 +398,7 @@ python .\closed_loop_eval.py `
   --metadata_csv .\data\microbio_formal_dataset\sample_metadata.csv `
   --outdir .\results\fixed_umax_validation `
   --u_grid arange:0:100:0.5 `
+
   --target_total_dosage 2500 `
   --target_terminal_pathogen 4e7 `
   --weight_profile custom `
@@ -411,6 +412,8 @@ python .\closed_loop_eval.py `
 **Outputs:** `fixed_umax_representative_trajectories.csv`, `fixed_umax_validation_manifest.json`, `*_repeated_stats.csv`
 
 **Note:** Do **not** pass `--run_umax_optimization_study`. `fixed_umax_validation_cases.csv` must have exactly **3 rows** (TAR / BestTree / UniformTreeMean).
+
+**u_grid syntax:** Custom `arange:start:stop:step` is **stop-inclusive** (unlike NumPy `np.arange`). This step-8 example `arange:0:100:0.5` therefore includes 100. The locked manuscript / Fig. 5 grid remains `arange:0:101:1` → 0, 1, ..., 101 (102 points). Do **not** change the formal YAML grid to 0–100 (training-tuned global Umax = 101 is on that grid).
 
 ---
 
@@ -456,6 +459,8 @@ python .\derive_optimizer_references.py `
 ```
 
 **10a** writes `optimizer_reference_by_repeat.csv` and `fixed_umax_policy_by_repeat.csv`. **10b** reuses them when present (no duplicate derivation). `--skip_if_complete` skips 10a if both files already cover all repeats.
+
+`arange:0:101:1` is **stop-inclusive** (0, 1, ..., 101; 102 points). It is not NumPy `np.arange(0, 101, 1)`, which would stop at 100.
 
 ### 10b — closed_loop_eval (main Fig. 5 evaluation)
 
@@ -606,6 +611,8 @@ Development-only records, **not** Fig. 3–5. Old `parameter_screening_summary.p
 | 5B | `umax_constraint_feasibility.png` — constraint feasibility across Umax |
 | 5C | `umax_score_landscape.png` — composite-penalty response landscape vs Umax |
 | 5D | `umax_summary_ablation_composite_supplementary.png` — composite-penalty policy ablation |
+
+**Formal Umax grid:** `arange:0:101:1` (`analysis_plan\parameter_screening_plan.yaml` / `locked_final_config.json`) is **0, 1, ..., 101 inclusive (102 points, step 1)**. Custom `arange:start:stop:step` **includes stop**. This is not NumPy `np.arange` (exclusive stop); `np.arange(0, 101, 1)` would end at 100. `ClosedLoopConfig` defaults to `np.arange(0, 102, 1, dtype=float)` so it matches the YAML parser. Training-tuned global Umax = 101 is a grid point (Supplementary Fig. S4). Fig. 5 source panels (5B/5C/5D) do **not** draw inferential brackets/stars.
 
 
 **Supplementary related to Fig. 5:** `supp_fig4.png` = `umax_ode_ablation.png` + `umax_summary_ablation.png`.

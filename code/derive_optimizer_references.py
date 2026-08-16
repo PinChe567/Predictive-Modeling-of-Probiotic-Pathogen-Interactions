@@ -37,6 +37,8 @@ from closed_loop_eval import (
     is_feasible_candidate,
     parse_predictions_wide_df,
     parse_u_grid,
+    FORMAL_U_GRID_SPEC,
+    U_GRID_ARANGE_HELP,
     resolve_dose_reference_scale_for_repeat,
     resolve_pauc_feasibility_fraction,
     resolve_prediction_csv_jobs,
@@ -968,7 +970,7 @@ def main() -> None:
     parser.add_argument("--predictions_manifest", default=None)
     parser.add_argument("--predictions_csv", default=None)
     parser.add_argument("--outdir", default="results/umax_optimization")
-    parser.add_argument("--u_grid", default="arange:0:101:1")
+    parser.add_argument("--u_grid", default=FORMAL_U_GRID_SPEC, help=U_GRID_ARANGE_HELP)
     parser.add_argument("--fixed_representative_umax", type=float, default=FIXED_REPRESENTATIVE_UMAX_DEFAULT)
     parser.add_argument("--dose_reference_quantile", type=float, default=0.90)
     parser.add_argument("--backend", default="auto", choices=["auto", "numba", "python"])
