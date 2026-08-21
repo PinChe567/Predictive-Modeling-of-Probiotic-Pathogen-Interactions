@@ -56,7 +56,7 @@ Growth dynamics of pathogenic *E. coli* and probiotic *L. lactis* for ODE model 
 * **`L. lactis growth curve OD.xlsx`**: Standard growth curve (OD600) for *L. lactis*.
 * **`L. lactis growth curve CFU.xlsx`**: Standard growth curve (CFU) for *L. lactis*.
 
-Growth dynamics of E. coli and L. lactis used to define representative CFU-scale and growth-scale ranges for simulation anchoring.
+Growth dynamics of pathogenic E. coli and probiotic L. lactis used for descriptive curve fitting and simulation-range anchoring.
 Preliminary hBD-3 response assays used to define approximate AMP-response ranges. These experiments were not designed as statistically powered tolerance, resistance, or killing-coefficient calibration assays.
 * **`AMP to L. lactis OD.xlsx`**: Preliminary *L. lactis* AMP-response observation under varying hBD-3 concentrations.
 * **`AMP to L. lactis CFU.xlsx`**: Preliminary *L. lactis* AMP-response observation under varying hBD-3 concentrations.
