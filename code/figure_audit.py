@@ -4107,7 +4107,7 @@ def build_fig5_plot_manifest(
         entry["note"] = (
             "Study-local umax-optimization plot inventory; not manuscript Fig5.png composite panel order."
         )
-    return {
+    body = {
         "figure": "umax_optimization_study",
         "figure_title": "Umax optimization analysis (study-local plots)",
         "validation_section": "Umax optimization analysis",
@@ -4153,6 +4153,9 @@ def build_fig5_plot_manifest(
             FIG5_MANUSCRIPT_DRAW_INFERENTIAL_ANNOTATIONS
         ),
     }
+    from closed_loop_eval import annotate_fig5_panel_sample_sizes
+
+    return annotate_fig5_panel_sample_sizes(body, n_repeats)
 
 
 build_umax_optimization_plot_manifest = build_fig5_plot_manifest
@@ -4394,7 +4397,17 @@ def generate_umax_optimization_plots(outdir: str) -> Dict[str, str]:
     if os.path.exists(plot_manifest_path):
         with open(plot_manifest_path, encoding="utf-8") as fh:
             plot_manifest = json.load(fh)
+    from closed_loop_eval import (
+        FIG5_REPRESENTATIVE_MANIFEST_KEYS,
+        annotate_fig5_panel_sample_sizes,
+        infer_umax_primary_selection_from_artifacts,
+    )
+
+    preserved = {k: plot_manifest[k] for k in FIG5_REPRESENTATIVE_MANIFEST_KEYS if k in plot_manifest}
     plot_manifest.update(plot_body)
+    plot_manifest.update(preserved)
+    plot_manifest.update(infer_umax_primary_selection_from_artifacts(outdir))
+    plot_manifest = annotate_fig5_panel_sample_sizes(plot_manifest, n_repeats)
     plot_manifest["generated_pngs"] = list(outputs.keys())
     write_json_manifest(outdir, FIG5_PLOT_MANIFEST_JSON, plot_manifest)
     if cl_manifest:

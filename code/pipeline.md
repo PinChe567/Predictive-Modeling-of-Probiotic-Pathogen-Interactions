@@ -232,7 +232,7 @@ python .\figure_audit.py --mode generate_plots --groups ode --ode_outdir .\resul
 
 **When:** after **step 4** (or anytime the ODE profile is available). Does **not** regenerate the supervised dataset and does **not** retrain TAR. Not required for the manuscript mainline (steps 5–11). The figure `mu_morris_summary.png` is Supplementary Fig. S1.
 
-**Goal:** SALib Morris elementary-effects analysis over the **31** raw-library factors (B0, k, γ_S, ρ, μ, Umax, Tthr), using formal raw-library bounds and `simulate_case`. Relative μ*/σ and ranks are always taken **among all 31 factors**. Summary heatmaps show only μ₁–μ₅.
+**Goal:** SALib Morris elementary-effects analysis over **all 31** raw-library factors (B0, k, γ_S, ρ, μ, Umax, Tthr), using formal raw-library bounds and `simulate_case`. Relative μ*/σ and ranks are always taken **among all 31 factors**. `mu_morris_summary.*` remains the μ-focused diagnostic (μ₁–μ₅). `morris_all_factors_mu_star.*` is the all-factor relative-μ* comparison. `morris_top_factors_by_output.csv` contains the top five factors per non-invariant output.
 
 **Output definitions** (manuscript; final 12 h = terminal window on `res.times`):
 
@@ -254,7 +254,7 @@ python .\multi_pathogen_simulator.py `
   --outdir .\results\mu_sensitivity
 ```
 
-Rebuild figure + normalized CSV from saved indices/samples (no re-analysis):
+Rebuild μ-focused figure, all-factor μ* heatmap, normalized CSV, and top-factor CSV from saved indices/samples (no re-analysis):
 
 ```powershell
 python .\multi_pathogen_simulator.py `
@@ -270,7 +270,9 @@ python .\multi_pathogen_simulator.py `
 | `mu_morris_output_samples.csv` | All 2048 evaluated output vectors (range audit) |
 | `mu_morris_all_factors.csv` / `mu_morris_indices.csv` | Raw Morris μ, μ*, σ (all factors × outputs) |
 | `mu_morris_normalized.csv` | Relative μ*/σ and ranks among 31 factors; `near_invariant` flag |
-| `mu_morris_summary.png` + `.svg` | μ₁–μ₅ heatmaps (relative; dynamic color range; N/A for near-invariant) |
+| `mu_morris_summary.png` + `.svg` | μ-focused diagnostic: μ₁–μ₅ heatmaps (relative; dynamic color range; N/A for near-invariant) |
+| `morris_all_factors_mu_star.png` + `.svg` | All-factor comparison: 31 factors × 11 outputs, relative μ* (0–1 per output; gray N/A for near-invariant) |
+| `morris_top_factors_by_output.csv` | Top five factors by `mu_star_rank_among_31` for each non-invariant output |
 | `mu_morris_manifest.json` | Definitions, observed ranges, near-invariant status, design metadata |
 
 **Settings:** 31 factors, 64 trajectories, 4 levels, seed `2026` → **2048** evaluations (`64 × (31+1)`).
@@ -306,7 +308,8 @@ python .\tree_srl_benchmark.py `
 **Notes:**
 
 - Manuscript: `--n_repeats 100` (use `10` for smoke tests); formal significance needs `n_repeats >= 10`
-- After Route A, align with `results\screening\locked_final_config.json` training settings (`expanded_tree_bank`, `max_tree_experts`, RF hyperparameters); commands above are manuscript defaults
+- The command above (`--max_tree_experts 0`, full expert bank) is the **executed formal benchmark** configuration, matching `results\tree_srl_benchmark\model_compare_manifest.json` and `results\tree_srl_benchmark\formal_run_config.json`
+- `results\screening\locked_final_config.json` is the **development/screening** lock (TAR `max_tree_experts=10`, RF `n_estimators=500`). It was **not** the training configuration used by the already-executed 100-repeat formal benchmark (`max_tree_experts=0`, `n_experts_used=21` each repeat). Do not treat those two files as identical
 - No GPU: `--lgbm_device cpu`
 - Figures are step 7 (Fig. 3), not here
 
@@ -594,12 +597,12 @@ Development-only records, **not** Fig. 3–5. Old `parameter_screening_summary.p
 | `umax_weights/umax_weight_profile_sensitivity.png` / `.svg`        | Per-profile penalty / dose means (needs `--run_umax_weight_sensitivity`) |
 | `umax_weights/umax_weight_profile_case_distributions.png` / `.svg` | Case-level distributions (same)                                          |
 | `parameter_screening_table.csv`                                    | Locked summary (training + umax weights)                                 |
-| `locked_final_config.json`                                         | Locked params for Stage 2                                                |
+| `locked_final_config.json`                                         | Development/screening lock for Stage 2 Umax grid/weights. Not identical to the executed formal TAR benchmark training config (see `results\tree_srl_benchmark\formal_run_config.json`) |
 
 
 **Parameters that affect downstream results:**
 
-- **Training:** TAR `expanded_tree_bank` × `max_tree_experts`, RF `n_estimators` × `max_depth` × `min_samples_leaf` → steps 5–6 predictions, ODE-back
+- **Training (screening grid):** TAR `expanded_tree_bank` × `max_tree_experts`, RF `n_estimators` × `max_depth` × `min_samples_leaf`. The screening lock selected TAR `max_tree_experts=10` and RF `n_estimators=500`, but the **already-executed** formal 100-repeat benchmark used `--max_tree_experts 0` (21 experts/repeat). Do not rewrite either record to match the other without a new run.
 - **Umax weights:** `balanced` / `efficacy` / `probiotic_sparing` / `dose_sparing` — compared in **step 5b**; manuscript locks `balanced` for steps 8 / 10
 
 ### Fig. 5 notes

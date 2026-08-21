@@ -606,7 +606,7 @@ def run_uncertainty_decomposition(
         base_manifest["skip_reason"] = "torch_not_installed"
         warnings.warn("Uncertainty decomposition skipped: PyTorch is not installed.", stacklevel=2)
         return UncertaintyDecompositionResult(
-            manifest={**base_manifest, "uncertainty_skipped_no_torch": True},
+            manifest={**base_manifest, "uncertainty_skipped_no_torch": True, "torch_used": False},
             skipped=True,
             skip_reason="torch_not_installed",
         )
@@ -660,6 +660,7 @@ def run_uncertainty_decomposition(
         **base_manifest,
         "uncertainty_enabled": True,
         "uncertainty_skipped_no_torch": False,
+        "torch_used": True,
         "repeat_id": repeat_id,
         "target_transform": target_transform,
         "n_validation_cases": len(X_val),
@@ -685,6 +686,80 @@ def run_uncertainty_decomposition(
         manifest=manifest,
         skipped=False,
     )
+
+
+def infer_repeat_torch_used(manifest: Optional[Dict[str, object]]) -> Optional[bool]:
+    """Return True/False when the repeat record is decisive, else None."""
+    if not manifest:
+        return None
+    if "torch_used" in manifest:
+        return bool(manifest["torch_used"])
+    if manifest.get("uncertainty_skipped_no_torch"):
+        return False
+    mc_mode = str(manifest.get("mc_inference_mode") or "")
+    enabled = bool(manifest.get("uncertainty_enabled", False))
+    skipped = bool(manifest.get("uncertainty_skipped_no_torch", False))
+    if enabled and not skipped and mc_mode:
+        return True
+    if enabled and not skipped:
+        return True
+    return None
+
+
+def per_repeat_uncertainty_execution_status(
+    repeat_manifests: Sequence[Dict[str, object]],
+) -> List[Dict[str, object]]:
+    rows: List[Dict[str, object]] = []
+    for manifest in repeat_manifests:
+        torch_flag = infer_repeat_torch_used(manifest)
+        skipped_no_torch = bool(manifest.get("uncertainty_skipped_no_torch", False))
+        if torch_flag is True:
+            status = "mc_dropout_completed"
+        elif skipped_no_torch or torch_flag is False:
+            status = "skipped_no_torch"
+        else:
+            status = "unknown"
+        rows.append(
+            {
+                "repeat_id": manifest.get("repeat_id"),
+                "uncertainty_enabled": bool(manifest.get("uncertainty_enabled", False)),
+                "uncertainty_skipped_no_torch": skipped_no_torch,
+                "mc_inference_mode": manifest.get("mc_inference_mode"),
+                "torch_used": torch_flag,
+                "execution_status": status,
+            }
+        )
+    return rows
+
+
+def apply_uncertainty_torch_used_fields(
+    uncertainty_manifest: Dict[str, object],
+    repeat_manifests: Sequence[Dict[str, object]],
+) -> Dict[str, object]:
+    """Set aggregate torch_used only when it is not misleading.
+
+    Per-repeat MC-dropout success must never be summarized as torch_used=false.
+    If the historical backend cannot be determined, omit the aggregate flag.
+    """
+    status_rows = per_repeat_uncertainty_execution_status(repeat_manifests)
+    uncertainty_manifest["per_repeat_execution_status"] = status_rows
+    n_completed = sum(1 for row in status_rows if row["execution_status"] == "mc_dropout_completed")
+    n_skipped = sum(1 for row in status_rows if row["execution_status"] == "skipped_no_torch")
+    n_unknown = sum(1 for row in status_rows if row["execution_status"] == "unknown")
+    uncertainty_manifest["n_repeats_mc_dropout_completed"] = int(n_completed)
+    uncertainty_manifest["n_repeats_skipped_no_torch"] = int(n_skipped)
+    uncertainty_manifest["n_repeats_backend_unknown"] = int(n_unknown)
+    if n_completed > 0:
+        uncertainty_manifest["torch_used"] = True
+    elif n_unknown > 0:
+        uncertainty_manifest.pop("torch_used", None)
+        uncertainty_manifest["torch_used_aggregate_omitted"] = True
+        uncertainty_manifest["torch_used_omission_reason"] = (
+            "historical backend cannot be reliably determined; see per_repeat_execution_status"
+        )
+    else:
+        uncertainty_manifest["torch_used"] = False
+    return uncertainty_manifest
 
 
 def write_uncertainty_artifacts(
@@ -3473,14 +3548,12 @@ def main() -> None:
             and result.uncertainty_manifest.get("uncertainty_enabled", False)
             for result in repeat_results
         )
-        uncertainty_manifest["torch_used"] = any(
-            result.uncertainty_manifest.get("torch_used", False)
-            for result in repeat_results
-            if result.uncertainty_manifest
-        )
         uncertainty_manifest["repeat_manifests"] = [
             result.uncertainty_manifest for result in repeat_results if result.uncertainty_manifest
         ]
+        apply_uncertainty_torch_used_fields(
+            uncertainty_manifest, uncertainty_manifest["repeat_manifests"]
+        )
         if not uncertainty_summary_df.empty and "mean_epistemic_fraction" in uncertainty_summary_df.columns:
             uncertainty_manifest["aleatoric_dominates_epistemic"] = bool(
                 (1.0 - uncertainty_summary_df["mean_epistemic_fraction"].astype(float)).mean() > 0.5

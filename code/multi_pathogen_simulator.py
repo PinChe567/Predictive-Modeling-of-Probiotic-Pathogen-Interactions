@@ -212,8 +212,8 @@ def experimental_calibrated_provenance() -> dict:
     """
     return {
         "parameterization_scope": (
-            "Experimentally anchored synthetic paper_figure profile; not a fully "
-            "calibrated co-culture or clinical infection model."
+            "experimentally anchored / experiment-informed synthetic ODE benchmark; "
+            "not a fully calibrated co-culture or clinical model."
         ),
         "experimental_anchor_scope": (
             "E. coli and L. lactis monoculture growth / preliminary AMP-response "
@@ -2066,6 +2066,15 @@ MORRIS_N_EVALUATIONS = MORRIS_N_TRAJECTORIES * (MORRIS_N_FACTORS + 1)  # 2048
 MORRIS_ABS_TOL = 1e-8
 MORRIS_REL_TOL = 1e-10
 MORRIS_MU_FACTORS = [f"mu_{i}" for i in range(1, N_STRAINS + 1)]
+MORRIS_FACTOR_NAMES: Tuple[str, ...] = (
+    tuple(f"B0_{i}" for i in range(1, N_STRAINS + 1))
+    + tuple(f"k_{i}" for i in range(1, N_STRAINS + 1))
+    + tuple(f"gamma_{i}_S" for i in range(1, N_STRAINS + 1))
+    + tuple(f"rho_{i}" for i in range(1, N_STRAINS + 1))
+    + tuple(f"mu_{i}" for i in range(1, N_STRAINS + 1))
+    + ("Umax",)
+    + tuple(f"Tthr_{i}" for i in range(1, N_STRAINS + 1))
+)
 MORRIS_OUTPUT_NAMES: Tuple[str, ...] = (
     "LR1",
     "LR2",
@@ -2320,6 +2329,97 @@ def load_morris_manifest(outdir: str) -> dict:
         return json.load(fh)
 
 
+def refresh_saved_morris_manifest_provenance(outdir: str) -> dict:
+    """Update OD-CFU / parameterization provenance from current helpers.
+
+    Does not rerun SALib, rewrite Morris CSVs, or regenerate PNG/SVG.
+    """
+    path = os.path.join(outdir, MORRIS_MANIFEST_NAME)
+    manifest = load_morris_manifest(outdir)
+    numerical_keys = (
+        "factor_names",
+        "bounds",
+        "trajectories",
+        "n_trajectories",
+        "levels",
+        "num_levels",
+        "n_levels",
+        "seed",
+        "n_factors",
+        "n_samples",
+        "n_evaluations",
+        "outputs",
+        "output_names",
+        "output_definitions",
+        "observed_output_ranges",
+        "near_invariant_outputs",
+        "near_invariant_abs_tol",
+        "near_invariant_rel_tol",
+        "relative_normalization",
+        "artifacts",
+    )
+    preserved = {key: manifest[key] for key in numerical_keys if key in manifest}
+    manifest.update(experimental_calibrated_provenance())
+    manifest.update(preserved)
+    write_json_manifest(outdir, MORRIS_MANIFEST_NAME, manifest)
+    print(f"Refreshed Morris provenance only: {path}")
+    return manifest
+
+
+_ODE_SIMULATION_NUMERICAL_KEYS = (
+    "mode",
+    "profile",
+    "probiotic_two_compartment",
+    "total_dosage",
+    "P_AUC",
+    "dose_count",
+    "u_max",
+    "dose_times_h",
+    "T_thr",
+    "trajectory_history_csv",
+    "metrics_csv",
+    "figure_png",
+    "figures_note",
+)
+
+
+def refresh_ode_simulation_manifest_provenance(outdir: str) -> dict:
+    """Update ODE provenance notes from current helpers. Does not rerun the representative ODE."""
+    path = os.path.join(outdir, "ode_simulation_manifest.json")
+    if not os.path.isfile(path):
+        raise FileNotFoundError(path)
+    with open(path, encoding="utf-8") as fh:
+        manifest = json.load(fh)
+    preserved = {key: manifest[key] for key in _ODE_SIMULATION_NUMERICAL_KEYS if key in manifest}
+    stale_source_keys = (
+        "k_pathogen_source",
+        "K_pathogen_source",
+        "k_P_source",
+        "K_P_source",
+        "gamma_P_source",
+    )
+    legacy_notes = {
+        key: manifest[key] for key in stale_source_keys if key in manifest
+    }
+    manifest.update(experimental_calibrated_provenance())
+    manifest.update(preserved)
+    if legacy_notes:
+        manifest["legacy_manifest_source_notes"] = {
+            "not_simulator_parameters": True,
+            "note": (
+                "Historical wording retained from this representative-run manifest. "
+                "These strings are experimental-anchor / documentation notes only; "
+                "they are not the paper_figure simulator parameters used for the saved trajectory."
+            ),
+            **legacy_notes,
+        }
+        for key in stale_source_keys:
+            manifest.pop(key, None)
+    write_json_manifest(outdir, "ode_simulation_manifest.json", manifest)
+    print(f"Refreshed ODE provenance only: {path}")
+    return manifest
+
+
 def _manifest_int(manifest: dict, *keys: str) -> Optional[int]:
     for key in keys:
         if key in manifest and manifest[key] is not None:
@@ -2556,6 +2656,307 @@ def _plot_morris_mu_focused(
     return paths
 
 
+def _morris_factor_family(name: str) -> str:
+    if name.startswith("B0_"):
+        return "B0"
+    if name.startswith("k_"):
+        return "k"
+    if name.startswith("gamma_"):
+        return "gamma"
+    if name.startswith("rho_"):
+        return "rho"
+    if name.startswith("mu_"):
+        return "mu"
+    if name == "Umax":
+        return "Umax"
+    if name.startswith("Tthr_"):
+        return "Tthr"
+    return name
+
+
+def _morris_factor_display(name: str) -> str:
+    if name == "Umax":
+        return r"$U_{\max}$"
+    if name.startswith("B0_"):
+        return rf"$B_{{{name.split('_', 1)[1]},0}}$"
+    if name.startswith("gamma_") and name.endswith("_S"):
+        idx = name.split("_")[1]
+        return rf"$\gamma_{{{idx},\mathrm{{S}}}}$"
+    if name.startswith("Tthr_"):
+        return rf"$T_{{\mathrm{{thr}},{name.split('_', 1)[1]}}}$"
+    if name.startswith("k_"):
+        return rf"$k_{{{name.split('_', 1)[1]}}}$"
+    if name.startswith("rho_"):
+        return rf"$\rho_{{{name.split('_', 1)[1]}}}$"
+    if name.startswith("mu_"):
+        return rf"$\mu_{{{name.split('_', 1)[1]}}}$"
+    return name
+
+
+def _morris_family_separator_positions(factor_order: Sequence[str]) -> List[float]:
+    positions: List[float] = []
+    prev: Optional[str] = None
+    for i, name in enumerate(factor_order):
+        fam = _morris_factor_family(str(name))
+        if prev is not None and fam != prev:
+            positions.append(i - 0.5)
+        prev = fam
+    return positions
+
+
+def _assert_morris_all_factor_grid(
+    normalized_df: pd.DataFrame,
+    factor_order: Sequence[str],
+    output_names: Sequence[str],
+) -> List[str]:
+    """Require a complete 31 × 11 Morris grid with no duplicated pairs."""
+    factors = [str(f) for f in factor_order]
+    outputs = [str(o) for o in output_names]
+    if len(factors) != MORRIS_N_FACTORS:
+        raise ValueError(f"Expected exactly {MORRIS_N_FACTORS} factors, got {len(factors)}.")
+    if len(set(factors)) != MORRIS_N_FACTORS:
+        raise ValueError("Duplicated factor names in validated Morris factor order.")
+    if list(outputs) != list(MORRIS_OUTPUT_NAMES):
+        raise ValueError(
+            "Output order must follow MORRIS_OUTPUT_NAMES. "
+            f"expected={list(MORRIS_OUTPUT_NAMES)}, got={outputs}"
+        )
+    if set(factors) != set(MORRIS_FACTOR_NAMES):
+        raise ValueError(
+            "Validated factor set does not match the Morris design order "
+            "(B0_1..5, k_1..5, gamma_1_S..5, rho_1..5, mu_1..5, Umax, Tthr_1..5)."
+        )
+
+    required = {"factor", "output", "relative_mu_star"}
+    missing_cols = required - set(normalized_df.columns)
+    if missing_cols:
+        raise ValueError(f"Normalized Morris table missing columns: {sorted(missing_cols)}")
+
+    work = normalized_df.copy()
+    work["factor"] = work["factor"].astype(str)
+    work["output"] = work["output"].astype(str)
+    if work.duplicated(subset=["factor", "output"]).any():
+        raise ValueError("Duplicated factor-output pairs in normalized Morris table.")
+
+    expected_n = MORRIS_N_FACTORS * len(MORRIS_OUTPUT_NAMES)
+    pair_count = work.drop_duplicates(subset=["factor", "output"]).shape[0]
+    if pair_count != expected_n:
+        raise ValueError(
+            f"Expected exactly {expected_n} unique factor-output pairs "
+            f"({MORRIS_N_FACTORS} factors × {len(MORRIS_OUTPUT_NAMES)} outputs), got {pair_count}."
+        )
+
+    plot_order = list(MORRIS_FACTOR_NAMES)
+    missing_pairs = []
+    for factor in plot_order:
+        for output in MORRIS_OUTPUT_NAMES:
+            hit = work[(work["factor"] == factor) & (work["output"] == output)]
+            if hit.empty:
+                missing_pairs.append((factor, output))
+    if missing_pairs:
+        raise ValueError(f"Normalized Morris table missing factor-output pairs: {missing_pairs[:8]}")
+    return plot_order
+
+
+def _assert_only_terminal_stress_near_invariant(near_invariant: Dict[str, bool]) -> None:
+    expected = "terminal_stress_response_fraction"
+    flagged = [name for name in MORRIS_OUTPUT_NAMES if bool(near_invariant.get(str(name), False))]
+    if flagged != [expected]:
+        raise ValueError(
+            "Expected the only near-invariant output to be "
+            f"{expected}, found {flagged}."
+        )
+
+
+def _plot_morris_all_factors_mu_star(
+    normalized_df: pd.DataFrame,
+    factor_order: Sequence[str],
+    output_names: Sequence[str],
+    near_invariant: Dict[str, bool],
+    outdir: str,
+) -> Tuple[str, str]:
+    """All-factor relative μ* heatmap for 31 factors × 10 non-invariant outputs."""
+    import matplotlib.pyplot as plt
+
+    plot_factors = _assert_morris_all_factor_grid(normalized_df, factor_order, output_names)
+    if len(plot_factors) != MORRIS_N_FACTORS:
+        raise ValueError(f"Expected exactly {MORRIS_N_FACTORS} factors, got {len(plot_factors)}.")
+    _assert_only_terminal_stress_near_invariant(near_invariant)
+
+    excluded = "terminal_stress_response_fraction"
+    outputs = [name for name in MORRIS_OUTPUT_NAMES if name != excluded]
+    if len(outputs) != 10:
+        raise ValueError(f"Expected 10 plotted outputs after excluding {excluded}, got {len(outputs)}.")
+    apply_matplotlib_style()
+
+    M = np.full((len(plot_factors), len(outputs)), np.nan, dtype=float)
+    for j, out in enumerate(outputs):
+        sub = normalized_df[normalized_df["output"].astype(str) == str(out)]
+        for i, factor in enumerate(plot_factors):
+            hit = sub[sub["factor"].astype(str) == factor]
+            if hit.empty:
+                raise ValueError(f"Missing normalized Morris row for factor={factor}, output={out}")
+            M[i, j] = float(hit.iloc[0]["relative_mu_star"])
+            if not np.isfinite(M[i, j]):
+                raise ValueError(
+                    f"Non-finite relative_mu_star for plotted output {out}, factor={factor}"
+                )
+
+    fig, ax = plt.subplots(figsize=(12.6, 15.4), constrained_layout=True)
+    cmap = plt.get_cmap(HEATMAP_SEQUENTIAL).copy()
+    im = ax.imshow(M, aspect="auto", cmap=cmap, vmin=0.0, vmax=1.0)
+    ax.set_xticks(np.arange(len(outputs)))
+    ax.set_xticklabels(
+        [MORRIS_OUTPUT_DISPLAY.get(o, o) for o in outputs],
+        rotation=32,
+        ha="right",
+        fontsize=13,
+    )
+    ax.set_yticks(np.arange(len(plot_factors)))
+    ax.set_yticklabels([_morris_factor_display(f) for f in plot_factors], fontsize=10)
+    ax.set_xlim(-0.5, len(outputs) - 0.5)
+    ax.set_ylim(len(plot_factors) - 0.5, -0.5)
+
+    for y in _morris_family_separator_positions(plot_factors):
+        ax.axhline(y, color="#8a8a8a", linewidth=0.9, alpha=0.85, zorder=3)
+
+    cbar = fig.colorbar(im, ax=ax, fraction=0.035, pad=0.02)
+    cbar.set_label(r"Relative $\mu^\star$", fontsize=14)
+    cbar.ax.tick_params(labelsize=12)
+    ax.set_title(
+        r"Morris relative $\mu^\star$ for all 31 factors across 10 non-invariant outputs"
+        "\n(per-output max $= 1$)",
+        fontsize=16,
+    )
+
+    png_path = os.path.join(outdir, "morris_all_factors_mu_star.png")
+    paths = save_figure(fig, png_path, dpi=600)
+    plt.close(fig)
+    print(
+        "Morris all-factor heatmap audit: "
+        f"{MORRIS_N_FACTORS} factors; {len(outputs)} plotted outputs; "
+        f"1 excluded near-invariant output ({excluded}); "
+        "no numerical CSV was modified."
+    )
+    return paths
+
+
+def export_morris_top_factors_by_output(
+    normalized_df: pd.DataFrame,
+    near_invariant: Dict[str, bool],
+    outdir: str,
+) -> str:
+    """Write the five lowest-rank factors per non-invariant output (output order, then rank)."""
+    required = {
+        "output",
+        "factor",
+        "raw_mu_star",
+        "relative_mu_star",
+        "mu_star_rank_among_31",
+        "raw_sigma",
+        "relative_sigma",
+    }
+    missing = required - set(normalized_df.columns)
+    if missing:
+        raise ValueError(f"Normalized Morris table missing columns: {sorted(missing)}")
+
+    rows: List[dict] = []
+    for output in MORRIS_OUTPUT_NAMES:
+        if near_invariant.get(str(output), False):
+            continue
+        sub = normalized_df[normalized_df["output"].astype(str) == str(output)].copy()
+        ranks = pd.to_numeric(sub["mu_star_rank_among_31"], errors="coerce")
+        if ranks.isna().any():
+            raise ValueError(
+                f"Non-invariant output {output} is missing numerical mu_star_rank_among_31 values."
+            )
+        sub = sub.assign(mu_star_rank_among_31=ranks)
+        top = sub.nsmallest(5, "mu_star_rank_among_31", keep="first")
+        top = top.sort_values(["mu_star_rank_among_31", "factor"], kind="mergesort")
+        for _, row in top.iterrows():
+            rows.append(
+                {
+                    "output": str(output),
+                    "factor": str(row["factor"]),
+                    "raw_mu_star": float(row["raw_mu_star"]),
+                    "relative_mu_star": float(row["relative_mu_star"]),
+                    "mu_star_rank_among_31": float(row["mu_star_rank_among_31"]),
+                    "raw_sigma": float(row["raw_sigma"]),
+                    "relative_sigma": float(row["relative_sigma"]),
+                }
+            )
+
+    out_df = pd.DataFrame(
+        rows,
+        columns=[
+            "output",
+            "factor",
+            "raw_mu_star",
+            "relative_mu_star",
+            "mu_star_rank_among_31",
+            "raw_sigma",
+            "relative_sigma",
+        ],
+    )
+    path = os.path.join(outdir, "morris_top_factors_by_output.csv")
+    out_df.to_csv(path, index=False)
+    return path
+
+
+def _export_morris_all_factor_views(
+    normalized_df: pd.DataFrame,
+    factor_order: Sequence[str],
+    outdir: str,
+    near_invariant: Dict[str, bool],
+    *,
+    write_top_csv: bool = True,
+) -> Dict[str, str]:
+    png_path, svg_path = _plot_morris_all_factors_mu_star(
+        normalized_df,
+        factor_order,
+        MORRIS_OUTPUT_NAMES,
+        near_invariant,
+        outdir,
+    )
+    artifacts = {
+        "morris_all_factors_mu_star.png": os.path.basename(png_path),
+        "morris_all_factors_mu_star.svg": os.path.basename(svg_path),
+    }
+    print(f"Saved {png_path}")
+    print(f"Saved {svg_path}")
+    if write_top_csv:
+        top_path = export_morris_top_factors_by_output(normalized_df, near_invariant, outdir)
+        artifacts["morris_top_factors_by_output.csv"] = os.path.basename(top_path)
+        print(f"Saved {top_path}")
+    return artifacts
+
+
+def export_morris_all_factor_heatmap_from_saved(outdir: str) -> Tuple[str, str]:
+    """Rebuild only the all-factor μ* PNG/SVG from saved normalized table + manifest."""
+    norm_path = os.path.join(outdir, MORRIS_NORMALIZED_NAME)
+    if not os.path.isfile(norm_path):
+        raise FileNotFoundError(f"Missing saved normalized Morris table: {norm_path}")
+    manifest = load_morris_manifest(outdir)
+    normalized_df = pd.read_csv(norm_path)
+    near_invariant = {
+        str(k): bool(v)
+        for k, v in dict(manifest.get("near_invariant_outputs") or {}).items()
+    }
+    factor_order = [str(name) for name in (manifest.get("factor_names") or MORRIS_FACTOR_NAMES)]
+    png_path, svg_path = _plot_morris_all_factors_mu_star(
+        normalized_df,
+        factor_order,
+        MORRIS_OUTPUT_NAMES,
+        near_invariant,
+        outdir,
+    )
+    print(f"Loaded {norm_path}")
+    print(f"Loaded {os.path.join(outdir, MORRIS_MANIFEST_NAME)}")
+    print(f"Saved {png_path}")
+    print(f"Saved {svg_path}")
+    return png_path, svg_path
+
+
 def _detect_near_invariant_from_samples(outdir: str) -> Dict[str, bool]:
     samples_path = os.path.join(outdir, MORRIS_OUTPUT_SAMPLES_NAME)
     near_invariant = {o: False for o in MORRIS_OUTPUT_NAMES}
@@ -2636,6 +3037,12 @@ def export_mu_morris_summary_from_saved(outdir: str) -> dict:
     normalized_df.to_csv(norm_path, index=False)
 
     png_path, svg_path = _plot_morris_mu_focused(normalized_df, outdir, near_invariant=near_invariant)
+    extra_artifacts = _export_morris_all_factor_views(
+        normalized_df,
+        meta["factor_order"],
+        outdir,
+        near_invariant,
+    )
 
     artifacts = dict(manifest.get("artifacts") or {})
     artifacts["mu_morris_summary.png"] = os.path.basename(png_path)
@@ -2644,6 +3051,7 @@ def export_mu_morris_summary_from_saved(outdir: str) -> dict:
     samples_path = os.path.join(outdir, MORRIS_OUTPUT_SAMPLES_NAME)
     if os.path.isfile(samples_path):
         artifacts[MORRIS_OUTPUT_SAMPLES_NAME] = MORRIS_OUTPUT_SAMPLES_NAME
+    artifacts.update(extra_artifacts)
     manifest["artifacts"] = artifacts
     manifest["output_definitions"] = dict(MORRIS_OUTPUT_DEFINITIONS)
     manifest["near_invariant_outputs"] = {k: bool(v) for k, v in near_invariant.items()}
@@ -2786,6 +3194,12 @@ def run_mu_sensitivity(profile: ModelProfile, outdir: str, *, plot_only: bool = 
     normalized_df.to_csv(norm_path, index=False)
 
     png_path, svg_path = _plot_morris_mu_focused(normalized_df, outdir, near_invariant=near_invariant)
+    extra_artifacts = _export_morris_all_factor_views(
+        normalized_df,
+        names,
+        outdir,
+        near_invariant,
+    )
 
     manifest = {
         "mode": "mu_sensitivity",
@@ -2822,6 +3236,7 @@ def run_mu_sensitivity(profile: ModelProfile, outdir: str, *, plot_only: bool = 
             "mu_morris_output_samples.csv": os.path.basename(samples_path),
             "mu_morris_summary.png": os.path.basename(png_path),
             "mu_morris_summary.svg": os.path.basename(svg_path),
+            **extra_artifacts,
         },
         **profile_provenance(profile),
     }
@@ -2918,7 +3333,12 @@ def main() -> None:
     parser.add_argument(
         "--morris_plot_only",
         action="store_true",
-        help="For --mode mu_sensitivity: rebuild figure/CSV from saved Morris indices only (no re-analysis).",
+        help="For --mode mu_sensitivity: rebuild all-factor heatmap PNG/SVG from saved Morris tables only (no re-analysis).",
+    )
+    parser.add_argument(
+        "--morris_provenance_only",
+        action="store_true",
+        help="For --mode mu_sensitivity: refresh OD-CFU/parameterization JSON provenance from current helpers; do not rerun Morris or rewrite plots/CSVs.",
     )
     args = parser.parse_args()
     os.makedirs(args.outdir, exist_ok=True)
@@ -2956,7 +3376,12 @@ def main() -> None:
         )
 
     elif args.mode == "mu_sensitivity":
-        run_mu_sensitivity(profile, args.outdir, plot_only=args.morris_plot_only)
+        if args.morris_provenance_only:
+            refresh_saved_morris_manifest_provenance(args.outdir)
+        elif args.morris_plot_only:
+            export_morris_all_factor_heatmap_from_saved(args.outdir)
+        else:
+            run_mu_sensitivity(profile, args.outdir, plot_only=False)
 
 
 if __name__ == "__main__":

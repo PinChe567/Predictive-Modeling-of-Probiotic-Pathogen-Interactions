@@ -766,7 +766,7 @@ def build_fig5_manifest_fields(*, n_repeats: int, significance_for_manuscript: b
         }
         for panel, filename, desc in MANUSCRIPT_FIG5_PANEL_SOURCES
     ]
-    return {
+    fields = {
         "figure": "umax_optimization_study",
         "figure_title": "Umax optimization analysis (study-local plots)",
         "validation_section": "Umax optimization analysis",
@@ -827,6 +827,149 @@ def build_fig5_manifest_fields(*, n_repeats: int, significance_for_manuscript: b
             "stars when reference significantly better; no formal stars when n_repeats < 10"
         ),
     }
+    return annotate_fig5_panel_sample_sizes(fields, n_repeats)
+
+
+FIG5_STATISTICAL_PANELS = (
+    "umax_summary_ablation.png",
+    "umax_summary_ablation_composite_supplementary.png",
+)
+FIG5_REPRESENTATIVE_TRAJECTORY_PANEL = "umax_ode_ablation.png"
+FIG5_REPRESENTATIVE_MANIFEST_KEYS = (
+    "plot_conditions",
+    "plot_display_labels",
+    "policy_umax_by_condition",
+    "composite_penalty_by_condition",
+    "t_thr_by_condition",
+    "selected_repeat_id",
+    "selected_case_index",
+    "penalty_reduction_tuned_global_minus_optimized",
+    "improvement_percentile_band",
+    "selection_reason",
+    "trajectories_csv",
+    "figure_png",
+)
+
+
+def _csv_has_data_rows(path: str) -> Tuple[bool, int]:
+    if not os.path.isfile(path) or os.path.getsize(path) <= 0:
+        return False, 0
+    try:
+        df = pd.read_csv(path)
+    except (pd.errors.EmptyDataError, ValueError):
+        return False, 0
+    n_rows = int(len(df))
+    return n_rows > 0, n_rows
+
+
+def infer_umax_primary_selection_from_artifacts(outdir: str) -> dict:
+    """Record primary selection from saved artifacts; never claim unexecuted sensitivity."""
+    rules: List[str] = []
+    for fname, col in (
+        (UMAX_FEASIBLE_REGION_SUMMARY_CSV, "selection_rule"),
+        (UMAX_ASPIRATION_SELECTION_DEBUG_CSV, "selection_rule"),
+    ):
+        path = os.path.join(outdir, fname)
+        if not os.path.isfile(path) or os.path.getsize(path) <= 0:
+            continue
+        try:
+            series = pd.read_csv(path, usecols=[col])[col].dropna().astype(str)
+        except (ValueError, KeyError, pd.errors.EmptyDataError):
+            continue
+        rules.extend(v for v in series.unique().tolist() if v)
+    unique_rules = sorted(set(rules))
+    if "infeasible_min_composite_penalty" in unique_rules and "feasible_first" in unique_rules:
+        recorded = "feasible_first / infeasible_min_composite_penalty fallback"
+    elif "infeasible_min_composite_penalty" in unique_rules:
+        recorded = "feasible_first / infeasible_min_composite_penalty fallback"
+    elif unique_rules:
+        recorded = "feasible_first" if "feasible_first" in unique_rules else unique_rules[0]
+    else:
+        recorded = "feasible_first / infeasible_min_composite_penalty fallback"
+    sensitivity_path = os.path.join(outdir, UMAX_SELECTION_POLICY_SENSITIVITY_CSV)
+    sensitivity_executed, sensitivity_n_rows = _csv_has_data_rows(sensitivity_path)
+    return {
+        "primary_umax_selection_policy": UMAX_SELECTION_POLICY_DEFAULT,
+        "primary_selection_recorded_from_data": recorded,
+        "applied_selection_rules": unique_rules,
+        "aspiration_then_pareto_role": "sensitivity_analysis_diagnostic_only",
+        "aspiration_selection_policy_sensitivity_executed": bool(sensitivity_executed),
+        "umax_selection_policy_sensitivity_csv": (
+            UMAX_SELECTION_POLICY_SENSITIVITY_CSV if sensitivity_executed else None
+        ),
+        "umax_selection_policy_sensitivity_n_rows": int(sensitivity_n_rows),
+    }
+
+
+def annotate_fig5_panel_sample_sizes(manifest: dict, n_repeats: int) -> dict:
+    """Fig. 5d and S4b use repeated splits; the representative trajectory is n=1 illustrative."""
+    n_repeats = int(n_repeats)
+    manifest["n_repeats"] = n_repeats
+    manifest["n_representative_cases"] = 1
+    manifest["illustrative_only_ablation_trajectories"] = True
+    mapping_keys = (
+        "figure_panel_mapping",
+        "umax_optimization_study_panel_mapping",
+        "manuscript_composite_panel_sources",
+        "manuscript_supplementary_composites",
+    )
+    entries: List[dict] = []
+    for key in mapping_keys:
+        value = manifest.get(key)
+        if isinstance(value, list):
+            entries.extend(value)
+        elif isinstance(value, dict):
+            for nested in value.values():
+                if isinstance(nested, list):
+                    entries.extend(nested)
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        filename = entry.get("filename")
+        if filename == FIG5_REPRESENTATIVE_TRAJECTORY_PANEL:
+            entry["n_representative_cases"] = 1
+            entry["illustrative_only"] = True
+            entry.pop("n_repeats", None)
+        elif filename in FIG5_STATISTICAL_PANELS:
+            entry["n_repeats"] = n_repeats
+        elif filename:
+            entry["n_repeats"] = n_repeats
+    return manifest
+
+
+def write_aggregate_fig5_plot_manifest(
+    outdir: str,
+    *,
+    n_repeats: int,
+    significance_for_manuscript: bool,
+    last_repeat_study_dir: Optional[str] = None,
+    prediction_sources: Optional[Sequence[str]] = None,
+    primary_outputs: Optional[Dict[str, str]] = None,
+    generated_pngs: Optional[Sequence[str]] = None,
+) -> dict:
+    """Rebuild aggregate fig5_plot_manifest from aggregate artifacts; do not copy last repeat."""
+    from figure_audit import build_fig5_plot_manifest
+
+    body = build_fig5_plot_manifest(
+        primary_outputs=primary_outputs or {},
+        n_repeats=int(n_repeats),
+        significance_for_manuscript=bool(significance_for_manuscript),
+        prediction_sources=prediction_sources,
+    )
+    if last_repeat_study_dir:
+        last_path = os.path.join(last_repeat_study_dir, FIG5_PLOT_MANIFEST_JSON)
+        if os.path.isfile(last_path):
+            with open(last_path, encoding="utf-8") as fh:
+                last_manifest = json.load(fh)
+            for key in FIG5_REPRESENTATIVE_MANIFEST_KEYS:
+                if key in last_manifest:
+                    body[key] = last_manifest[key]
+    body.update(infer_umax_primary_selection_from_artifacts(outdir))
+    body = annotate_fig5_panel_sample_sizes(body, n_repeats)
+    if generated_pngs is not None:
+        body["generated_pngs"] = list(generated_pngs)
+    write_json_manifest(outdir, FIG5_PLOT_MANIFEST_JSON, _to_json_native(body))
+    return body
 
 
 WEIGHT_PROFILE_NAMES: Tuple[str, ...] = (
@@ -5146,15 +5289,14 @@ def finalize_repeated_umax_optimization_outputs(
             _save_csv(align_df, os.path.join(outdir, "umax_objective_alignment.csv"))
             _save_csv(align_summary, os.path.join(outdir, "umax_objective_alignment_summary.csv"))
 
-    if config.export_umax_representative_trajectories:
+    last_study = _repeat_umax_study_dir(worker_results[-1]["repeat_outdir"]) if worker_results else None
+    if config.export_umax_representative_trajectories and last_study:
         import shutil
 
-        last_study = _repeat_umax_study_dir(worker_results[-1]["repeat_outdir"])
-        for fname in ["umax_ablation_representative_trajectories.csv", FIG5_PLOT_MANIFEST_JSON]:
-            src = os.path.join(last_study, fname)
-            dst = os.path.join(outdir, fname)
-            if os.path.exists(src):
-                shutil.copy2(src, dst)
+        src = os.path.join(last_study, "umax_ablation_representative_trajectories.csv")
+        dst = os.path.join(outdir, "umax_ablation_representative_trajectories.csv")
+        if os.path.exists(src):
+            shutil.copy2(src, dst)
 
     dose_ref = worker_results[0].get("dose_reference_scale", worker_results[0]["dosage_reference"])
     dose_src = worker_results[0].get("dose_reference_source", config.dose_reference_source)
@@ -5165,6 +5307,8 @@ def finalize_repeated_umax_optimization_outputs(
     if os.path.isfile(fixed_policy_manifest_path):
         with open(fixed_policy_manifest_path, encoding="utf-8") as fh:
             fixed_policy_meta = json.load(fh)
+    selection_from_data = infer_umax_primary_selection_from_artifacts(outdir)
+    sensitivity_csv_name = selection_from_data.get("umax_selection_policy_sensitivity_csv")
     manifest = {
         "prediction_sources": [w.get("prediction_source", "") for w in worker_results],
         "u_grid": config.u_grid.tolist(),
@@ -5176,7 +5320,7 @@ def finalize_repeated_umax_optimization_outputs(
             "umax_feasible_region_summary_csv": UMAX_FEASIBLE_REGION_SUMMARY_CSV,
             "umax_optimization_u_candidates_csv": "umax_optimization_u_candidates.csv",
             "umax_score_landscape_curves_csv": "umax_score_landscape_curves.csv",
-            "umax_selection_policy_sensitivity_csv": UMAX_SELECTION_POLICY_SENSITIVITY_CSV,
+            "umax_selection_policy_sensitivity_csv": sensitivity_csv_name,
         },
         **fixed_policy_meta,
         **build_closed_loop_optimizer_manifest_fields(
@@ -5186,8 +5330,16 @@ def finalize_repeated_umax_optimization_outputs(
             n_repeats=n_repeats,
             significance_for_manuscript=significance_for_manuscript,
         ),
+        **selection_from_data,
     }
     write_json_manifest(outdir, UMAX_OPTIMIZATION_MANIFEST_JSON, _to_json_native(manifest))
+    write_aggregate_fig5_plot_manifest(
+        outdir,
+        n_repeats=n_repeats,
+        significance_for_manuscript=significance_for_manuscript,
+        last_repeat_study_dir=last_study,
+        prediction_sources=manifest.get("prediction_sources"),
+    )
 
 
 def run_repeated_umax_optimization_pipeline(
