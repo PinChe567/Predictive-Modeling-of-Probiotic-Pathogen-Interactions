@@ -76,6 +76,6 @@ Preliminary hBD-3 response assays used to define approximate AMP-response ranges
 The generated database and final analysis results are deposited on Zenodo as:
 
 * **`formal_datasets.zip`**: The complete code-generated `data/` directory.
-* **`predictions_and_results.zip`**: The complete code-generated `results/` directory, including saved predictions, numerical result tables, manifests, and CSV/PNG/SVG figure outputs.
+* **`predictions_and_results.zip`**: The complete code-generated `results/` directory, including saved predictions, numerical result tables, manifests, CSV/PNG/SVG figure outputs, sample-weight normalization audit outputs, and train-only normalization TAR sensitivity outputs.
 
 Zenodo: [10.5281/zenodo.21961676](https://doi.org/10.5281/zenodo.21961676)
