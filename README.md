@@ -16,9 +16,9 @@ Author: Huang, P.-C.
 
 Author: Huang, P.-C.
 
-Download analysis_plan and code folders first.
+For the primary computational workflow, download the `analysis_plan/` and `code/` folders. The sample-weight audit utilities additionally require the generated `data/` and saved `results/` directories available from the Zenodo archive.
 
-The files correspond to the results presented in **Figures 2-5** of the manuscript. The computational workflow is organized into the following Python scripts:
+The primary computational workflow supports the results presented in **Figures 2–5** of the manuscript. Additional reproducibility and sensitivity-audit scripts are included for the sample-weight normalization analysis. The code is organized into the following Python scripts:
 
 | Script | Purpose |
 |---|---|
@@ -34,11 +34,16 @@ The files correspond to the results presented in **Figures 2-5** of the manuscri
 | `corrEcoli.py` | Performs the paired *E. coli* OD600–CFU linear regression and exports the calibration plot in PNG/SVG formats. |
 | `corrLlactis.py` | Performs the paired *L. lactis* OD600–CFU linear regression and exports the calibration plot in PNG/SVG formats. |
 | `correlation.py` | Verifies that the paired OD600–CFU regression results agree across the correlation scripts, simulator constants, and dataset provenance table. |
+| `audit_sample_weight_normalization.py` | Audits the dataset-level min–max normalization used to construct relabeling-derived sample weights against training-set-specific normalization across the exact 100 repeated `bio_id`-grouped splits, without retraining models or rerunning ODE simulations. |
+| `audit_trainonly_weight_model_sensitivity.py` | Re-fits TAR on the affected repeats using training-set-specific sample-weight normalization and quantifies its influence on repeated-split aggregate performance and model ranking without overwriting the official benchmark outputs. |
 
 For the full execution order and command-line examples, please see:
 
 ```text
 code/pipeline.md
+```
+```markdown
+The two `audit_*` scripts are optional reproducibility/sensitivity utilities and are not part of the primary Figures 2–5 execution pipeline. Their outputs are archived separately with the Zenodo results.
 ```
 
 ---
